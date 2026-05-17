@@ -7,7 +7,6 @@ __pycache__/
 .env
 .env.*
 analysis.md
-
 code/vector_index_ml_notes/
 .streamlit/secrets.toml
 
