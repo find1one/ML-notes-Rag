@@ -118,15 +118,59 @@ def render_sources(docs: List) -> None:
             st.markdown(doc.page_content[:1600])
 
 
+def generate_answer(question: str, docs: List, route_type: str) -> str:
+    generator = load_generation_module()
+    if route_type == "detail":
+        return generator.generate_step_by_step_answer(question, docs)
+    return generator.generate_basic_answer(question, docs)
+
+
+def format_retrieval_fallback_answer(question: str, docs: List) -> str:
+    if not docs:
+        return "没有检索到足够相关的笔记内容，暂时无法生成回答。"
+
+    lines = [
+        "LLM 没有返回可用回答。下面是基于检索结果整理的笔记片段，供你先判断召回是否正确。",
+        "",
+        f"问题：{question}",
+        "",
+        "检索依据：",
+    ]
+
+    for index, doc in enumerate(docs, start=1):
+        metadata = doc.metadata
+        title = metadata.get("title", "Untitled")
+        topic = metadata.get("topic", "Unknown")
+        section = metadata.get("section_path", "Unknown")
+        path = metadata.get("relative_path", metadata.get("source", ""))
+        excerpt = " ".join(doc.page_content.strip().split())
+        if len(excerpt) > 500:
+            excerpt = excerpt[:500].rstrip() + "..."
+        lines.extend(
+            [
+                "",
+                f"{index}. **{title}**（{topic}）",
+                f"   - Section: `{section}`",
+                f"   - Source: `{path}`",
+                f"   - Excerpt: {excerpt}",
+            ]
+        )
+
+    return "\n".join(lines)
+
+
 def main() -> None:
     st.title("Machine Learning Notes RAG")
     st.caption("中文提问，检索英文机器学习 Markdown 笔记，并显示回答来源。")
 
+    api_key_available = bool(os.getenv("MOONSHOT_API_KEY"))
+
     with st.sidebar:
         st.header("Settings")
         top_k = st.slider("Top-k chunks", min_value=1, max_value=8, value=DEFAULT_CONFIG.top_k)
-        use_llm_answer = st.toggle("Generate answer with LLM", value=bool(os.getenv("MOONSHOT_API_KEY")))
+        use_llm_answer = st.toggle("Generate answer with LLM", value=api_key_available)
         use_llm_rewrite = st.toggle("Use LLM query rewrite", value=False)
+        st.caption(f"MOONSHOT_API_KEY: {'set' if api_key_available else 'not set'}")
         st.divider()
         st.write("Data path")
         st.code(DEFAULT_CONFIG.data_path)
@@ -150,6 +194,8 @@ def main() -> None:
 
     if run:
         st.session_state["last_question"] = question
+        st.session_state.pop("last_answer", None)
+        st.session_state.pop("last_error", None)
 
     question = st.session_state.get("last_question", question).strip()
     if not question:
@@ -166,7 +212,7 @@ def main() -> None:
     if route_type == "list" and topic:
         docs = data_module.filter_documents_by_topic(topic)
         st.write(f"Listing documents for topic `{topic}`.")
-        answer = load_generation_module().generate_list_answer(question, docs) if use_llm_answer else format_doc_list(docs)
+        answer = format_doc_list(docs)
         st.subheader("Answer")
         st.markdown(answer)
         st.subheader("Documents")
@@ -179,20 +225,28 @@ def main() -> None:
     st.write("Retrieval query:")
     st.code(retrieval_query)
 
+    st.subheader("Answer")
     if use_llm_answer:
-        if not os.getenv("MOONSHOT_API_KEY"):
+        if not api_key_available:
             st.error("MOONSHOT_API_KEY is not set. Turn off LLM answer generation or set the key.")
+        elif not docs:
+            st.warning("没有检索到相关内容，因此没有调用 LLM 生成回答。")
         else:
-            with st.spinner("Generating answer..."):
-                generator = load_generation_module()
-                if route_type == "detail":
-                    answer = generator.generate_step_by_step_answer(question, docs)
+            try:
+                with st.spinner("Generating answer with Moonshot/Kimi..."):
+                    answer = generate_answer(question, docs, route_type).strip()
+                if answer:
+                    st.session_state["last_answer"] = answer
+                    st.markdown(answer)
                 else:
-                    answer = generator.generate_basic_answer(question, docs)
-            st.subheader("Answer")
-            st.markdown(answer)
+                    st.warning("LLM 返回了空回答。请检查模型配置、API 状态，或先查看下方检索来源。")
+                    st.markdown(format_retrieval_fallback_answer(question, docs))
+            except Exception as exc:
+                st.session_state["last_error"] = str(exc)
+                st.error("LLM answer generation failed.")
+                st.exception(exc)
+                st.markdown(format_retrieval_fallback_answer(question, docs))
     else:
-        st.subheader("Answer")
         st.info("LLM answer generation is disabled. Review retrieved sources below.")
 
     st.subheader("Retrieved Sources")
