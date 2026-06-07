@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 logs/
+面试/
 *.pyc
 *.pyo
 *.pyd
