@@ -160,6 +160,7 @@ except Exception as exc:
         latency_ms=latency_ms,
         stage=stage,
         error=str(exc),
+        retrieval_metrics=retrieval_metrics,
     )
     raise
 ```
@@ -201,6 +202,7 @@ top_sources
 latency_ms
 stage
 error
+retrieval_metrics
 ```
 
 字段含义：
@@ -215,20 +217,29 @@ error
 | `latency_ms` | 本次请求总耗时，单位毫秒 |
 | `stage` | 当前请求执行到的阶段 |
 | `error` | 错误信息；成功时为 `null` |
+| `retrieval_metrics` | 检索阶段分项耗时；未进入检索阶段时为 `null` |
 
 示例：
 
 ```jsonl
-{"level": "INFO", "message": "RAG logger", "question": "线性回归是什么", "retrieval_query": "linear regression definition overview OLS ordinary least squares", "top_sources": [{"title": "Linear Regression", "topic": "Regression", "section": "Linear Regression", "path": "01-Regression/01-LinearRegression.md"}], "latency_ms": 318558, "stage": "generation", "error": "502: LLM returned an empty response"}
+{"level": "INFO", "message": "RAG logger", "question": "线性回归是什么", "retrieval_query": "linear regression definition overview OLS ordinary least squares", "top_sources": [{"title": "Linear Regression", "topic": "Regression", "section": "Linear Regression", "path": "01-Regression/01-LinearRegression.md"}], "latency_ms": 138806, "stage": "response", "error": null, "retrieval_metrics": {"faiss_ms": 201, "bm25_ms": 0, "rrf_ms": 0, "retrieval_total_ms": 202}}
 ```
 
 这条日志可以直接说明：
 
 - query rewrite 成功
 - retrieval 成功，并且召回了线性回归相关 source
-- generation 阶段失败
-- 失败原因是 LLM 返回空回答
-- 请求耗时约 318 秒
+- FAISS 向量检索耗时约 201ms，是这次检索阶段的主要开销
+- BM25 和 RRF 融合耗时小于 1ms，取整后显示为 0
+- 整个请求耗时约 138 秒，因此端到端瓶颈不在检索，而更可能在 LLM rewrite 或 generation
+
+失败日志示例：
+
+```jsonl
+{"level": "INFO", "message": "RAG logger", "question": "", "retrieval_query": null, "top_sources": [], "latency_ms": 0, "stage": "initial", "error": "400: Question cannot be empty", "retrieval_metrics": null}
+```
+
+这说明请求还没有进入 route、rewrite 和 retrieval 阶段，就在输入校验阶段失败了。
 
 ## stage 字段
 
@@ -269,6 +280,48 @@ response
 
 说明检索已经完成，问题出在答案生成阶段。
 
+## retrieval_metrics 字段
+
+为了进一步分析混合检索性能，检索模块会统计 FAISS、BM25、RRF 三个阶段的耗时，并将最近一次检索指标保存到 `RetrievalOptimizationModule.last_metrics`。
+
+当前记录的字段包括：
+
+```text
+faiss_ms
+bm25_ms
+rrf_ms
+retrieval_total_ms
+```
+
+字段含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `faiss_ms` | FAISS 向量检索耗时 |
+| `bm25_ms` | BM25 关键词检索耗时 |
+| `rrf_ms` | RRF 融合重排耗时 |
+| `retrieval_total_ms` | 一次 hybrid search 的总检索耗时 |
+
+示例：
+
+```json
+"retrieval_metrics": {
+  "faiss_ms": 201,
+  "bm25_ms": 0,
+  "rrf_ms": 0,
+  "retrieval_total_ms": 202
+}
+```
+
+这说明在该次检索中，检索阶段主要开销来自 FAISS；但如果整体 `latency_ms` 远大于 `retrieval_total_ms`，则端到端瓶颈通常不在检索，而在 LLM query rewrite 或 answer generation。
+
+`retrieval_metrics` 和普通 `logger.info(...)` 的区别是：
+
+```text
+logger.info: 输出到终端，方便开发时观察
+retrieval_metrics: 写入 JSONL 业务日志，方便后续统计、复盘和面试展示
+```
+
 ## top_sources 的处理
 
 检索返回的是 LangChain `Document` 对象，不适合直接写入日志。因此在 `api.py` 中新增了内部辅助函数：
@@ -289,6 +342,38 @@ def _format_top_sources(retrieved_docs: list) -> list[dict]:
 
 这样日志只保存可读、可分析的 source 元数据，而不是完整文档内容。
 
+## 错误案例验证
+
+目前已经验证过典型错误可以进入 JSONL 日志。
+
+### 空问题
+
+请求：
+
+```json
+{"question": ""}
+```
+
+日志：
+
+```json
+{"question": "", "retrieval_query": null, "top_sources": [], "stage": "initial", "error": "400: Question cannot be empty", "retrieval_metrics": null}
+```
+
+说明输入校验失败时，系统可以记录原始问题、当前阶段和错误原因。
+
+### LLM 空回答
+
+当检索成功但 LLM 多次返回空回答时，日志会记录：
+
+```json
+{"stage": "generation", "error": "502: LLM returned an empty response"}
+```
+
+这说明 query rewrite 和 retrieval 已经完成，问题发生在答案生成阶段。
+
+这类验证的价值在于：日志不仅能记录成功请求，也能在异常场景下说明失败发生在哪个环节。
+
 ## 对原项目的价值
 
 这部分改进让项目从一个 RAG demo 更接近后端服务，主要价值包括：
@@ -299,7 +384,7 @@ def _format_top_sources(retrieved_docs: list) -> list[dict]:
 
 ### 2. 增强可观测性
 
-JSONL 日志记录了用户问题、检索 query、top sources、耗时和错误阶段。这样当回答质量不好时，可以定位是 rewrite、retrieval 还是 generation 的问题。
+JSONL 日志记录了用户问题、检索 query、top sources、端到端耗时、错误阶段和检索分项耗时。这样当回答质量不好或请求变慢时，可以定位是 rewrite、FAISS、BM25、RRF 还是 generation 的问题。
 
 ### 3. 支持失败 case 复盘
 
@@ -323,13 +408,13 @@ JSONL 日志记录了用户问题、检索 query、top sources、耗时和错误
 
 ### 5. 便于性能分析
 
-`latency_ms` 可以发现请求耗时异常。例如某次请求耗时 300 秒以上，就能结合 stage 和普通日志判断是否是 LLM 调用太慢或重试过多。
+`latency_ms` 可以发现请求耗时异常，`retrieval_metrics` 可以进一步拆解检索阶段。例如某次请求总耗时 138 秒，但 `retrieval_total_ms` 只有 202ms，就能判断检索不是主要瓶颈，应该优先排查 LLM 调用、空回答重试或 query rewrite。
 
 ## 后续可继续优化
 
 当前日志已经能定位主要阶段，但还可以继续细化：
 
-- 记录 `route_ms`、`rewrite_ms`、`retrieval_ms`、`generation_ms`
+- 继续记录 `route_ms`、`rewrite_ms`、`generation_ms`
 - 将 `/chat` 也接入同样的日志逻辑
 - 避免多个入口重复实现 RAG 流程，抽象统一的 `RAGService`
 - 将 `log_path`、`max retries`、`top_k` 配置化
@@ -345,4 +430,4 @@ JSONL 日志记录了用户问题、检索 query、top sources、耗时和错误
 2. RAG 问答失败时如何定位具体环节
 ```
 
-通过 `/chat/debug` 和 JSONL 日志，系统现在不仅能返回答案，也能记录一次问答从 question 到 retrieval_query、top_sources、generation 的关键过程。这为后续优化检索质量、排查 LLM 生成异常和构建评估闭环提供了基础。
+通过 `/chat/debug` 和 JSONL 日志，系统现在不仅能返回答案，也能记录一次问答从 question 到 retrieval_query、top_sources、retrieval_metrics、generation 的关键过程。这为后续优化检索质量、排查 LLM 生成异常和构建评估闭环提供了基础。

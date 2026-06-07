@@ -4,6 +4,7 @@
 
 import logging
 from typing import List, Dict, Any
+import time
 
 from langchain_community.vectorstores import FAISS
 from langchain_community.retrievers import BM25Retriever
@@ -25,6 +26,7 @@ class RetrievalOptimizationModule:
         self.vectorstore = vectorstore
         self.chunks = chunks
         self.setup_retrievers()
+        self.last_metrics = {}
 
     def setup_retrievers(self):
         """设置向量检索器和BM25检索器"""
@@ -58,11 +60,37 @@ class RetrievalOptimizationModule:
             检索到的文档列表
         """
         # 分别获取向量检索和BM25检索结果
+        retrieval_start = time.perf_counter()
+
+        faiss_start = time.perf_counter()
         vector_docs = self.vector_retriever.invoke(query)
+        faiss_ms = int((time.perf_counter() - faiss_start) * 1000)
+
+        bm25_start = time.perf_counter()
         bm25_docs = self.bm25_retriever.invoke(query)
+        bm25_ms = int((time.perf_counter() - bm25_start) * 1000)
 
         # 使用RRF重排
+        rrf_start = time.perf_counter()
         reranked_docs = self._rrf_rerank(vector_docs, bm25_docs)
+        rrf_ms = int((time.perf_counter() - rrf_start) * 1000)
+
+        retrieval_ms = int((time.perf_counter() - retrieval_start) * 1000)
+        self.last_metrics = {
+            "faiss_ms": faiss_ms,
+            "bm25_ms": bm25_ms,
+            "rrf_ms": rrf_ms,
+            "total_retrieval_ms": retrieval_ms
+        }
+
+        logger.info(
+        "Hybrid search timing: faiss_ms=%s bm25_ms=%s rrf_ms=%s retrieval_total_ms=%s",
+        faiss_ms,
+        bm25_ms,
+        rrf_ms,
+        retrieval_ms,
+        )
+
         return reranked_docs[:top_k]
     
     def metadata_filtered_search(self, query: str, filters: Dict[str, Any], top_k: int = 5) -> List[Document]:

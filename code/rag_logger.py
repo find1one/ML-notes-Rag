@@ -8,7 +8,7 @@ class JsonFormatter(logging.Formatter):
             "level": record.levelname,
             "message": record.getMessage(),
         }
-        for field in ["question", "retrieval_query", "top_sources", "latency_ms", "stage", "error"]:
+        for field in ["question", "retrieval_query", "top_sources", "latency_ms", "stage", "error", "retrieval_metrics"]:
             if hasattr(record, field):
                 payload[field] = getattr(record, field)
         return json.dumps(payload, ensure_ascii=False)
@@ -37,7 +37,7 @@ logger.addHandler(handler)
 #         },
 # )
 
-def log_rag_query(question, retrieval_query, top_sources, latency_ms, stage, error=None):
+def log_rag_query(question, retrieval_query, top_sources, latency_ms, stage, error=None, retrieval_metrics=None):
     logger.info(
         "RAG logger",
         extra={
@@ -47,5 +47,6 @@ def log_rag_query(question, retrieval_query, top_sources, latency_ms, stage, err
             "latency_ms": latency_ms,
             "stage": stage,
             "error": error,
+            "retrieval_metrics": retrieval_metrics,
         },
     )

@@ -10,6 +10,7 @@
 - 针对中文问题与英文语料的错配，加入中文到英文 retrieval query 改写。
 - 对列表类问题使用 topic 元数据直接列出文档，避免中文 query 在英文语料上召回不全。
 - 提供 Streamlit Web UI，展示回答、检索 query、source path 和 top-k chunks。
+- 提供 FastAPI 后端接口，并用 JSONL 日志记录 `question`、`retrieval_query`、`top_sources`、`latency_ms`、`stage`、`error` 和检索分项耗时。
 - 提供不调用 LLM 的离线检索评估脚本；当前 15 个测试 case 上 Top-1 source accuracy 为 40.0%，Top-3 source accuracy 为 73.3%，Top-3 topic accuracy 为 93.3%。
 
 ## 项目目标
@@ -22,6 +23,7 @@
 - 如何支持中文问题检索英文内容。
 - 如何把检索来源暴露给用户，降低生成式回答的不可验证性。
 - 如何用离线评估脚本量化检索效果，而不是只依赖主观演示。
+- 如何通过 API、错误处理和结构化日志提升 RAG 系统的可调用性与可观测性。
 
 ## 数据特点
 
@@ -87,7 +89,7 @@ GenerationIntegrationModule
     - Chinese answer generation
     |
     v
-Streamlit UI / CLI
+FastAPI / Streamlit UI / CLI
 ```
 
 ## 核心实现
@@ -150,6 +152,15 @@ query
   -> answer generation
 ```
 
+检索模块会统计混合检索内部耗时：
+
+- `faiss_ms`：FAISS 向量检索耗时。
+- `bm25_ms`：BM25 关键词检索耗时。
+- `rrf_ms`：RRF 融合重排耗时。
+- `retrieval_total_ms`：一次 hybrid search 的总检索耗时。
+
+这些指标会写入 JSONL 日志中的 `retrieval_metrics` 字段，便于判断检索阶段的瓶颈是否来自向量检索、关键词检索还是融合排序。
+
 ### 4. 中文问题适配英文资料
 
 由于数据是英文 Markdown，而用户主要用中文提问，系统会在详细问答时调用 LLM 将中文问题改写成英文检索 query。例如：
@@ -171,9 +182,11 @@ linear regression variable selection feature selection p-value backward eliminat
 ```text
 .
 ├── code
+│   ├── api.py
 │   ├── config.py
 │   ├── evaluate_retrieval.py
 │   ├── main.py
+│   ├── rag_logger.py
 │   ├── requirements.txt
 │   ├── streamlit_app.py
 │   └── rag_modules
@@ -183,6 +196,8 @@ linear regression variable selection feature selection p-value backward eliminat
 │       └── retrieval_optimization.py
 ├── data
 │   └── ML-Notes-in-Markdown-master
+├── docs
+│   └── backend_api_logging.md
 ├── .gitignore
 └── README.md
 ```
@@ -296,6 +311,112 @@ UI 支持：
 - 可选择是否调用 LLM 生成最终回答。
 - 在未设置 API key 时，也可以只看检索结果。
 
+## FastAPI 后端与 JSONL 日志
+
+项目提供 FastAPI 后端入口：
+
+```text
+code/api.py
+```
+
+主要接口：
+
+```text
+GET  /health
+GET  /ready
+POST /chat
+POST /chat/debug
+```
+
+本地启动方式：
+
+```bash
+cd code
+uvicorn api:app --reload
+```
+
+访问：
+
+```text
+http://127.0.0.1:8000
+```
+
+其中 `/chat/debug` 会返回 `route_type`、`retrieval_query` 和 `sources`，用于观察 RAG 中间链路。
+
+后端同时接入了 JSONL 请求日志：
+
+```text
+logs/rag_queries.jsonl
+```
+
+每条日志记录一行 JSON，核心字段包括：
+
+```text
+question
+retrieval_query
+top_sources
+latency_ms
+stage
+error
+retrieval_metrics
+```
+
+`retrieval_metrics` 会进一步记录：
+
+```text
+faiss_ms
+bm25_ms
+rrf_ms
+retrieval_total_ms
+```
+
+示例：
+
+```json
+{
+  "question": "线性回归是什么",
+  "retrieval_query": "linear regression definition overview OLS ordinary least squares",
+  "top_sources": [
+    {
+      "title": "Linear Regression",
+      "topic": "Regression",
+      "section": "Linear Regression",
+      "path": "01-Regression/01-LinearRegression.md"
+    }
+  ],
+  "latency_ms": 138806,
+  "stage": "response",
+  "error": null,
+  "retrieval_metrics": {
+    "faiss_ms": 201,
+    "bm25_ms": 0,
+    "rrf_ms": 0,
+    "retrieval_total_ms": 202
+  }
+}
+```
+
+这类日志可以判断一次请求是慢在检索、query rewrite 还是 LLM generation。例如如果 `latency_ms` 远大于 `retrieval_total_ms`，通常说明检索不是主要瓶颈。
+
+错误场景也会记录到日志。例如空问题会返回 `400`，并记录：
+
+```json
+{
+  "question": "",
+  "retrieval_query": null,
+  "top_sources": [],
+  "stage": "initial",
+  "error": "400: Question cannot be empty",
+  "retrieval_metrics": null
+}
+```
+
+更详细的后端接口、错误处理和日志设计说明见：
+
+```text
+docs/backend_api_logging.md
+```
+
 ## 示例
 
 ### 示例 1：列表类问题
@@ -399,7 +520,7 @@ Top-3 topic accuracy: 93.3%
 - 生成质量依赖 Moonshot/Kimi API；未设置 API key 时无法生成最终 LLM 回答，但仍可运行检索、离线评估和 Streamlit 检索预览。
 - Markdown 中的图片公式目前只保留链接文本，尚未做 OCR 或公式解析。
 - 部分短文档或弱关键词文档，如 Decision Tree、Random Forest、Gaussian Mixture，仍存在精确 source 命中不稳定的问题。
-- 当前 Streamlit UI 主要用于本地演示，尚未做部署、鉴权或多用户并发支持。
+- 当前 Streamlit UI 和 FastAPI 后端主要用于本地演示，尚未做部署、鉴权或多用户并发支持。
 
 ## 后续计划
 
@@ -411,3 +532,4 @@ Top-3 topic accuracy: 93.3%
 4. 优化短文档和弱关键词文档的 metadata filtering。
 5. 补充更多典型问答案例截图，覆盖 list、detail、LLM 失败 fallback 等场景。
 6. 清理标题展示格式，例如 `LogisticRegression` -> `Logistic Regression`。
+7. 将 `/chat` 也接入完整 JSONL 日志，并继续细化 `rewrite_ms`、`generation_ms` 等阶段耗时。

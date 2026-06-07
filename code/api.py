@@ -100,7 +100,8 @@ def chat_debug(request: ChatRequest) -> ChatDebug:
     question = request.question.strip()
     retrieval_query = None
     retrieved_docs = []
-    stage = "initial"
+    retrieval_metrics = None
+    stage = "validate"
     try:
         if not question:
             raise HTTPException(status_code=400, detail="Question cannot be empty")
@@ -129,7 +130,7 @@ def chat_debug(request: ChatRequest) -> ChatDebug:
                 retrieval_query,
                 top_k=rag_system.config.top_k,
             )
-        
+        retrieval_metrics = rag_system.retrieval_module.last_metrics.copy()
 
         if not retrieved_docs:
             return ChatDebug(
@@ -165,7 +166,8 @@ def chat_debug(request: ChatRequest) -> ChatDebug:
             top_sources=_format_top_sources(retrieved_docs),
             latency_ms=int((time.perf_counter() - start_time) * 1000),
             stage=stage,
-            error=None
+            error=None,
+            retrieval_metrics=retrieval_metrics,
         )
         return ChatDebug(
             answer=answer,
@@ -182,6 +184,7 @@ def chat_debug(request: ChatRequest) -> ChatDebug:
             top_sources=_format_top_sources(retrieved_docs),
             latency_ms=latency_ms,
             stage=stage,
-            error=str(exc)
+            error=str(exc),
+            retrieval_metrics=retrieval_metrics
         )
         raise
