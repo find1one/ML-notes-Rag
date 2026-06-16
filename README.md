@@ -133,7 +133,27 @@ Linear Regression > Variable Selection
 
 这些字段用于过滤、展示来源和回溯父文档。
 
-### 3. 混合检索
+### 3. 检索流程
+
+系统的检索链路会根据问题类型走不同路径：
+
+```text
+user question
+  -> query router: list / detail / general
+  -> topic detection: 从中文或英文问题中识别 Regression、Classification、Clustering 等主题
+  -> retrieval query:
+       list 问题：保留原问题，优先用 topic 元数据列出父文档
+       detail/general 问题：调用 LLM 把中文问题改写成英文检索 query
+  -> candidate retrieval:
+       FAISS semantic search: k=5
+       BM25 keyword search: k=5
+  -> RRF rerank:
+       按 1 / (60 + rank) 融合两路排序
+  -> optional metadata filter:
+       如果识别到 topic，先取 top_k * 3 候选，再按 metadata.topic 过滤
+  -> return top_k chunks
+  -> answer generation / source display
+```
 
 检索模块采用：
 
@@ -141,23 +161,18 @@ Linear Regression > Variable Selection
 - BM25：关键词检索，适合 `OLS`、`p-value`、`K-means` 这类精确术语。
 - RRF：融合两路结果，降低单一路径漏召回风险。
 
-整体流程：
+当前实现中，`hybrid_search(query, top_k)` 会先分别取 FAISS top-5 和 BM25 top-5，再做 RRF 融合，并返回最终 top-k。`metadata_filtered_search(query, filters, top_k)` 会先扩大候选到 `top_k * 3`，再用 chunk 元数据过滤，例如只保留 `topic=Classification` 的结果。
 
-```text
-query
-  -> FAISS top-k
-  -> BM25 top-k
-  -> RRF rerank
-  -> metadata filter
-  -> answer generation
-```
+列表类问题有一条特殊路径。例如“分类有哪些方法”会先识别到 `Classification` topic，然后直接从父文档元数据列出该主题下的文档，而不是完全依赖向量相似度。这是为了避免中文问题在英文语料上召回不全。
+
+详细问答则会先做中文到英文 query rewrite，例如“线性回归怎么做变量选择？”会被改写成 `linear regression variable selection feature selection p-value backward elimination`，再进入混合检索。
 
 检索模块会统计混合检索内部耗时：
 
 - `faiss_ms`：FAISS 向量检索耗时。
 - `bm25_ms`：BM25 关键词检索耗时。
 - `rrf_ms`：RRF 融合重排耗时。
-- `retrieval_total_ms`：一次 hybrid search 的总检索耗时。
+- `total_retrieval_ms`：一次 hybrid search 的总检索耗时。
 
 这些指标会写入 JSONL 日志中的 `retrieval_metrics` 字段，便于判断检索阶段的瓶颈是否来自向量检索、关键词检索还是融合排序。
 
@@ -237,15 +252,23 @@ pip install -r code/requirements.txt
 pip install -r code\requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-如果需要生成最终回答，需要设置 Moonshot API key：
+生成最终回答、CLI 问答和 FastAPI 后端都需要设置 Moonshot API key：
 
 ```powershell
 $env:MOONSHOT_API_KEY="your_api_key"
 ```
 
-不设置 API key 时，仍然可以运行离线检索评估脚本，也可以在 Streamlit UI 中关闭 LLM answer generation，仅查看检索结果。
+macOS / Linux：
+
+```bash
+export MOONSHOT_API_KEY="your_api_key"
+```
+
+不设置 API key 时，仍然可以运行离线检索评估脚本，也可以在 Streamlit UI 中关闭 LLM answer generation 和 LLM query rewrite，仅查看检索结果。`code/main.py` 和 `code/api.py` 会初始化 LLM，因此无 key 时会直接报错。
 
 ## CLI 运行
+
+CLI 会完成知识库构建、query routing、query rewrite、检索和最终回答生成，因此需要提前设置 `MOONSHOT_API_KEY`。
 
 Windows PowerShell：
 
@@ -328,7 +351,7 @@ POST /chat
 POST /chat/debug
 ```
 
-本地启动方式：
+本地启动方式。服务启动时会初始化 RAG 系统并加载或构建 FAISS 索引，因此需要提前设置 `MOONSHOT_API_KEY`：
 
 ```bash
 cd code
@@ -341,7 +364,44 @@ uvicorn api:app --reload
 http://127.0.0.1:8000
 ```
 
-其中 `/chat/debug` 会返回 `route_type`、`retrieval_query` 和 `sources`，用于观察 RAG 中间链路。
+接口调用示例：
+
+```bash
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/ready
+curl -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"question":"线性回归是什么？"}'
+curl -X POST http://127.0.0.1:8000/chat/debug \
+  -H "Content-Type: application/json" \
+  -d '{"question":"线性回归怎么做变量选择？"}'
+```
+
+`/chat` 只返回最终回答：
+
+```json
+{
+  "answer": "..."
+}
+```
+
+`/chat/debug` 会额外返回 `route_type`、`retrieval_query` 和 `sources`，用于观察 RAG 中间链路：
+
+```json
+{
+  "answer": "...",
+  "route_type": "detail",
+  "retrieval_query": "linear regression variable selection feature selection p-value backward elimination",
+  "sources": [
+    {
+      "title": "Linear Regression",
+      "topic": "Regression",
+      "section": "Linear Regression > Variable Selection",
+      "path": "01-Regression/01-LinearRegression.md"
+    }
+  ]
+}
+```
 
 后端同时接入了 JSONL 请求日志：
 
@@ -367,7 +427,7 @@ retrieval_metrics
 faiss_ms
 bm25_ms
 rrf_ms
-retrieval_total_ms
+total_retrieval_ms
 ```
 
 示例：
@@ -391,12 +451,12 @@ retrieval_total_ms
     "faiss_ms": 201,
     "bm25_ms": 0,
     "rrf_ms": 0,
-    "retrieval_total_ms": 202
+    "total_retrieval_ms": 202
   }
 }
 ```
 
-这类日志可以判断一次请求是慢在检索、query rewrite 还是 LLM generation。例如如果 `latency_ms` 远大于 `retrieval_total_ms`，通常说明检索不是主要瓶颈。
+这类日志可以判断一次请求是慢在检索、query rewrite 还是 LLM generation。例如如果 `latency_ms` 远大于 `total_retrieval_ms`，通常说明检索不是主要瓶颈。
 
 错误场景也会记录到日志。例如空问题会返回 `400`，并记录：
 
@@ -405,7 +465,8 @@ retrieval_total_ms
   "question": "",
   "retrieval_query": null,
   "top_sources": [],
-  "stage": "initial",
+  "latency_ms": 1,
+  "stage": "validate",
   "error": "400: Question cannot be empty",
   "retrieval_metrics": null
 }
@@ -491,16 +552,42 @@ python code/evaluate_retrieval.py --top-k 3
 - Top-k topic accuracy
 - 每个 case 的 top-k 检索结果、topic、section 和 source path
 
-当前基线结果：
+当前基线结果（`--top-k 3`）：
 
 ```text
 Cases: 15
-Top-1 source accuracy: 40.0%
-Top-3 source accuracy: 73.3%
-Top-3 topic accuracy: 93.3%
+Top-1 source accuracy: 6/15 = 40.0%
+Top-3 source accuracy: 11/15 = 73.3%
+Top-3 topic accuracy: 14/15 = 93.3%
 ```
 
-这个结果说明：主题识别整体可用，但精确文件命中仍有优化空间，尤其是 Decision Tree、Random Forest、Gaussian Mixture 等短文档或弱关键词文档。
+评估指标含义：
+
+| 指标 | 含义 | 当前结果 |
+| --- | --- | --- |
+| Top-1 source accuracy | 第 1 个 chunk 的 `relative_path` 命中预期源文件 | 40.0% |
+| Top-3 source accuracy | 前 3 个 chunk 中任意一个命中预期源文件 | 73.3% |
+| Top-3 topic accuracy | 前 3 个 chunk 中任意一个命中预期主题 | 93.3% |
+
+这个结果说明：主题召回整体可用，适合作为 RAG 答案的初筛依据；但精确 source 排序仍有优化空间，Top-1 结果不应被当成唯一依据。实际 UI 和 `/chat/debug` 会展示多个 source，方便用户判断召回是否可靠。
+
+## 失败案例分析
+
+本轮离线评估中，Top-3 source 未命中的 case 有 4 个：
+
+| Case | Query | 预期 source | 实际 Top-3 概况 | 可能原因 |
+| --- | --- | --- | --- | --- |
+| `decision_tree` | `decision tree classification algorithm` | `02-Classification/05-DecisionTree.md` | 召回 Naive Bayes 和 Classification README | query 中的 `classification algorithm` 与分类总览和 Naive Bayes 文档重叠较强，Decision Tree 文档自身有效文本较短，排序竞争力不足 |
+| `random_forest` | `random forest classification ensemble decision trees` | `02-Classification/06-RandomForest.md` | 召回 K-means、Classification README、Support Vector Regression | `forest`、`ensemble` 等关键词在短文档中支撑不足，语义检索被其他算法片段干扰，缺少强 metadata 约束 |
+| `gaussian_mixture` | `gaussian mixture model clustering expectation maximization` | `03-Clustering/03-GaussianMixtureModels.md` | 召回 Hierarchical Clustering、Linear Regression、Clustering README | 同属 Clustering 的概览内容被排到前面，目标文档可能因 chunk 内容短或标题权重不足没有进入 Top-3 |
+| `numpy_matrix` | `numpy matrix tutorial Python` | `00-Prerequisites/numpyMatrixTutorial.md` | 召回 Appendix 下的 Numpy 文档 | 语义上 Appendix Numpy 文档确实相关，但评估预期是 Prerequisites 中的旧教程文件，说明数据集中存在主题重复和路径命名不一致 |
+
+这些失败不代表系统完全无法回答对应问题，而是说明“精确源文件命中”仍不稳定。当前缓解方式包括：
+
+- 对列表类问题优先走 topic 元数据和父文档列表。
+- 在 UI 和 `/chat/debug` 中展示多个 source，而不是只展示 Top-1。
+- 使用 BM25 + FAISS + RRF 融合，减少单一路径召回偏差。
+- 在后续优化中给标题、文件名和 topic metadata 更高权重，尤其针对短文档和算法名明确的问题。
 
 ## Screenshots
 

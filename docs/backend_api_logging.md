@@ -222,7 +222,7 @@ retrieval_metrics
 示例：
 
 ```jsonl
-{"level": "INFO", "message": "RAG logger", "question": "线性回归是什么", "retrieval_query": "linear regression definition overview OLS ordinary least squares", "top_sources": [{"title": "Linear Regression", "topic": "Regression", "section": "Linear Regression", "path": "01-Regression/01-LinearRegression.md"}], "latency_ms": 138806, "stage": "response", "error": null, "retrieval_metrics": {"faiss_ms": 201, "bm25_ms": 0, "rrf_ms": 0, "retrieval_total_ms": 202}}
+{"level": "INFO", "message": "RAG logger", "question": "线性回归是什么", "retrieval_query": "linear regression definition overview OLS ordinary least squares", "top_sources": [{"title": "Linear Regression", "topic": "Regression", "section": "Linear Regression", "path": "01-Regression/01-LinearRegression.md"}], "latency_ms": 138806, "stage": "response", "error": null, "retrieval_metrics": {"faiss_ms": 201, "bm25_ms": 0, "rrf_ms": 0, "total_retrieval_ms": 202}}
 ```
 
 这条日志可以直接说明：
@@ -236,7 +236,7 @@ retrieval_metrics
 失败日志示例：
 
 ```jsonl
-{"level": "INFO", "message": "RAG logger", "question": "", "retrieval_query": null, "top_sources": [], "latency_ms": 0, "stage": "initial", "error": "400: Question cannot be empty", "retrieval_metrics": null}
+{"level": "INFO", "message": "RAG logger", "question": "", "retrieval_query": null, "top_sources": [], "latency_ms": 0, "stage": "validate", "error": "400: Question cannot be empty", "retrieval_metrics": null}
 ```
 
 这说明请求还没有进入 route、rewrite 和 retrieval 阶段，就在输入校验阶段失败了。
@@ -248,7 +248,7 @@ retrieval_metrics
 当前阶段包括：
 
 ```text
-initial
+validate
 route
 rewrite
 retrieval
@@ -260,6 +260,7 @@ response
 
 | stage | 说明 |
 | --- | --- |
+| `validate` | 输入校验阶段 |
 | `route` | 问题分类阶段 |
 | `rewrite` | 中文问题改写英文检索 query 阶段 |
 | `retrieval` | FAISS/BM25/RRF 检索阶段 |
@@ -290,7 +291,7 @@ response
 faiss_ms
 bm25_ms
 rrf_ms
-retrieval_total_ms
+total_retrieval_ms
 ```
 
 字段含义：
@@ -300,7 +301,7 @@ retrieval_total_ms
 | `faiss_ms` | FAISS 向量检索耗时 |
 | `bm25_ms` | BM25 关键词检索耗时 |
 | `rrf_ms` | RRF 融合重排耗时 |
-| `retrieval_total_ms` | 一次 hybrid search 的总检索耗时 |
+| `total_retrieval_ms` | 一次 hybrid search 的总检索耗时 |
 
 示例：
 
@@ -309,11 +310,11 @@ retrieval_total_ms
   "faiss_ms": 201,
   "bm25_ms": 0,
   "rrf_ms": 0,
-  "retrieval_total_ms": 202
+  "total_retrieval_ms": 202
 }
 ```
 
-这说明在该次检索中，检索阶段主要开销来自 FAISS；但如果整体 `latency_ms` 远大于 `retrieval_total_ms`，则端到端瓶颈通常不在检索，而在 LLM query rewrite 或 answer generation。
+这说明在该次检索中，检索阶段主要开销来自 FAISS；但如果整体 `latency_ms` 远大于 `total_retrieval_ms`，则端到端瓶颈通常不在检索，而在 LLM query rewrite 或 answer generation。
 
 `retrieval_metrics` 和普通 `logger.info(...)` 的区别是：
 
@@ -357,7 +358,7 @@ def _format_top_sources(retrieved_docs: list) -> list[dict]:
 日志：
 
 ```json
-{"question": "", "retrieval_query": null, "top_sources": [], "stage": "initial", "error": "400: Question cannot be empty", "retrieval_metrics": null}
+{"question": "", "retrieval_query": null, "top_sources": [], "stage": "validate", "error": "400: Question cannot be empty", "retrieval_metrics": null}
 ```
 
 说明输入校验失败时，系统可以记录原始问题、当前阶段和错误原因。
@@ -408,7 +409,7 @@ JSONL 日志记录了用户问题、检索 query、top sources、端到端耗时
 
 ### 5. 便于性能分析
 
-`latency_ms` 可以发现请求耗时异常，`retrieval_metrics` 可以进一步拆解检索阶段。例如某次请求总耗时 138 秒，但 `retrieval_total_ms` 只有 202ms，就能判断检索不是主要瓶颈，应该优先排查 LLM 调用、空回答重试或 query rewrite。
+`latency_ms` 可以发现请求耗时异常，`retrieval_metrics` 可以进一步拆解检索阶段。例如某次请求总耗时 138 秒，但 `total_retrieval_ms` 只有 202ms，就能判断检索不是主要瓶颈，应该优先排查 LLM 调用、空回答重试或 query rewrite。
 
 ## 后续可继续优化
 
