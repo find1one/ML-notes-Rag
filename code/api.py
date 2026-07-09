@@ -86,7 +86,7 @@ def chat(request: ChatRequest) -> ChatResponse:
     answer = ""
     for attempt in range(MAX_EMPTY_ANSWER_RETRIES + 1):
         answer = rag_system.ask_question(question, stream=False)
-        if not _is_blank(answer):
+        if not _is_blank(answer):# not empty, break the loop and return the answer
             break
         logger.warning("LLM returned an empty answer for /chat; retry=%s", attempt + 1)
 
@@ -188,3 +188,6 @@ def chat_debug(request: ChatRequest) -> ChatDebug:
             retrieval_metrics=retrieval_metrics
         )
         raise
+
+@app.post("/query")
+def query(query:ChatRequest)->

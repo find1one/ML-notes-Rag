@@ -349,6 +349,8 @@ GET  /health
 GET  /ready
 POST /chat
 POST /chat/debug
+POST /query
+POST /feedback
 ```
 
 本地启动方式。服务启动时会初始化 RAG 系统并加载或构建 FAISS 索引，因此需要提前设置 `MOONSHOT_API_KEY`：
@@ -375,6 +377,12 @@ curl -X POST http://127.0.0.1:8000/chat \
 curl -X POST http://127.0.0.1:8000/chat/debug \
   -H "Content-Type: application/json" \
   -d '{"question":"线性回归怎么做变量选择？"}'
+curl -X POST http://127.0.0.1:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"question":"线性回归怎么做变量选择？"}'
+curl -X POST http://127.0.0.1:8000/feedback \
+  -H "Content-Type: application/json" \
+  -d '{"query_id":1,"rating":"helpful","comment":"回答清楚"}'
 ```
 
 `/chat` 只返回最终回答：
@@ -403,11 +411,41 @@ curl -X POST http://127.0.0.1:8000/chat/debug \
 }
 ```
 
+`/query` 是给前端使用的正式问答接口。它会先查 exact cache，再查 semantic cache，未命中时走完整 RAG，并且无论是否命中缓存都会写入查询日志：
+
+```json
+{
+  "query_id": 1,
+  "answer": "...",
+  "sources": [],
+  "latency_ms": 1234,
+  "cached": false,
+  "cache_type": null,
+  "similarity": null
+}
+```
+
+`/feedback` 用于提交用户反馈：
+
+```json
+{
+  "ok": true
+}
+```
+
 后端同时接入了 JSONL 请求日志：
 
 ```text
 logs/rag_queries.jsonl
 ```
+
+`/query`、`/feedback`、exact cache 和 semantic cache 的结构化数据默认写入本地 SQLite：
+
+```text
+logs/query_api.sqlite3
+```
+
+表结构按 `query_logs`、`exact_cache`、`semantic_cache`、`feedback` 拆分，字段与后续迁移到 MySQL 的接口语义保持一致；其中 `query_logs` 包含 `cached`、`cache_type`、`similarity`，方便统计缓存命中率和常见问题分布。
 
 每条日志记录一行 JSON，核心字段包括：
 
@@ -620,3 +658,5 @@ Top-3 topic accuracy: 14/15 = 93.3%
 5. 补充更多典型问答案例截图，覆盖 list、detail、LLM 失败 fallback 等场景。
 6. 清理标题展示格式，例如 `LogisticRegression` -> `Logistic Regression`。
 7. 将 `/chat` 也接入完整 JSONL 日志，并继续细化 `rewrite_ms`、`generation_ms` 等阶段耗时。
+8. 优化 detail/general 问题的英文检索 query 生成链路：优先尝试规则术语增强、外部翻译 API 或轻量翻译模型，减少默认 LLM query rewrite 带来的延迟；仅在翻译质量不足、首轮召回较差或复杂多轮问题中兜底调用 LLM，并通过离线评估对比 Top-1 / Top-k accuracy 和端到端延迟。
+9. 优化 query route 阶段，减少默认 LLM 分类调用：优先用规则识别明确的 list/detail/general 问题，例如“哪些/有什么/列出”归为 list，“为什么/怎么做/步骤/原理/优缺点”归为 detail，明显非知识库问题归为 general；对于规则置信度不足的 query，可进一步尝试基于少量标注样本的 embedding 相似度分类，仅在路由不确定或评估效果不足时兜底调用 LLM，从而把多数请求的主链路控制在一次 LLM answer generation。
