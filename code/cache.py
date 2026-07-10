@@ -1,42 +1,56 @@
-import os
-import json
+"""Best-effort Redis exact cache utilities."""
+
 import hashlib
+import json
+import logging
 import re
 from typing import Any, Optional
 
 import redis
 
+from config import DEFAULT_CONFIG
 
-def get_redis_client() -> redis.Redis:
-    return redis.Redis(
-        host=os.getenv("REDIS_HOST", "127.0.0.1"),
-        port=int(os.getenv("REDIS_PORT", "6379")),
-        db=int(os.getenv("REDIS_DB", "0")),
-        decode_responses=True,
-    )
+logger = logging.getLogger(__name__)
 
-# normalize question by stripping, lowercasing, and collapsing whitespace
+
+def get_redis_client(redis_url: Optional[str] = None) -> redis.Redis:
+    return redis.Redis.from_url(redis_url or DEFAULT_CONFIG.redis_url, decode_responses=True)
+
+
 def normalize_question(question: str) -> str:
-    normalize = question.strip().lower()
-    normalized = re.sub(r"\s+", " ", normalize)# 将多个空格替换为一个
-    return normalized
-# hash the question for exact cache key
+    return re.sub(r"\s+", " ", question.strip().lower())
+
+
 def hash_question(question: str) -> str:
-    normalized = normalize_question(question)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return hashlib.sha256(normalize_question(question).encode("utf-8")).hexdigest()
 
-def exact_cache(question: str) -> str:
-    return f"rag:exact:{hash_question(question)}"
 
-def get_exact_cache(question: str) -> Optional[dict[str, Any]]:
-    client = get_redis_client()
-    cache_key = exact_cache(question)
-    cached_data = client.get(cache_key)
-    if not cached_data:
+def exact_cache_key(question: str) -> str:
+    return "rag:exact:" + hash_question(question)
+
+
+def get_exact_cache(question: str, client: Optional[redis.Redis] = None) -> Optional[dict]:
+    try:
+        cached = (client or get_redis_client()).get(exact_cache_key(question))
+        return json.loads(cached) if cached else None
+    except (redis.RedisError, ValueError, TypeError) as exc:
+        logger.warning("Exact cache read failed; continuing without cache: %s", exc)
         return None
-    return json.loads(cached_data)
-# set the exact cache with a TTL (time to live) in seconds
-def set_exact_cache(question: str, payload: dict[str, Any], ttl: int) -> None:
-    client = get_redis_client()
-    cache_key = exact_cache(question)
-    client.setex(cache_key, ttl, json.dumps(payload, ensure_ascii=False))
+
+
+def set_exact_cache(
+    question: str,
+    payload: dict[str, Any],
+    ttl_seconds: Optional[int] = None,
+    client: Optional[redis.Redis] = None,
+) -> bool:
+    try:
+        (client or get_redis_client()).setex(
+            exact_cache_key(question),
+            ttl_seconds or DEFAULT_CONFIG.cache_ttl_seconds,
+            json.dumps(payload, ensure_ascii=False),
+        )
+        return True
+    except (redis.RedisError, TypeError, ValueError) as exc:
+        logger.warning("Exact cache write failed; continuing without cache: %s", exc)
+        return False

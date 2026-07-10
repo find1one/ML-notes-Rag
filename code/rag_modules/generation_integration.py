@@ -18,12 +18,24 @@ logger = logging.getLogger(__name__)
 class GenerationIntegrationModule:
     """Route, rewrite, and answer questions using retrieved ML-note context."""
 
-    def __init__(self, model_name: str = "kimi-k2.6", temperature: float = 1.0, max_tokens: int = 2048):
+    def __init__(self, model_name: str = "kimi-k2.6", temperature: float = 0.6, max_tokens: int = 2048):
         self.model_name = model_name
-        self.temperature = temperature
+        self.temperature = self._normalize_temperature(model_name, temperature)
         self.max_tokens = max_tokens
         self.llm = None
         self.setup_llm()
+
+    @staticmethod
+    def _normalize_temperature(model_name: str, temperature: float) -> float:
+        """Apply model-specific parameter constraints before making a request."""
+        if model_name.lower().startswith("kimi-k2") and temperature != 0.6:
+            logger.warning(
+                "%s only accepts temperature=0.6; overriding configured value %s",
+                model_name,
+                temperature,
+            )
+            return 0.6
+        return temperature
 
     def setup_llm(self) -> None:
         logger.info("Initializing LLM: %s", self.model_name)
@@ -32,12 +44,37 @@ class GenerationIntegrationModule:
         if not api_key:
             raise ValueError("Please set the MOONSHOT_API_KEY environment variable.")
 
-        self.llm = MoonshotChat(
+        llm = MoonshotChat(
             model=self.model_name,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             moonshot_api_key=api_key,
         )
+        extra_body = self._model_extra_body(self.model_name)
+        # MoonshotChat's legacy adapter drops model_kwargs, while Runnable.bind
+        # forwards extra_body to both invoke() and stream().
+        self.llm = llm.bind(extra_body=extra_body) if extra_body else llm
+
+    @staticmethod
+    def _model_extra_body(model_name: str) -> dict:
+        """Disable long-form thinking for short, retrieval-grounded answers."""
+        if model_name.lower() in {"kimi-k2.5", "kimi-k2.6"}:
+            return {"thinking": {"type": "disabled"}}
+        return {}
+
+    @staticmethod
+    def _nonempty_chunks(chunks):
+        """Yield visible answer text and fail loudly when a stream is empty."""
+        emitted = False
+        for chunk in chunks:
+            if not chunk:
+                continue
+            emitted = True
+            yield chunk
+        if not emitted:
+            raise RuntimeError(
+                "Moonshot returned no answer content. Check the model's thinking mode and max_tokens."
+            )
 
     def generate_basic_answer(self, query: str, context_docs: List[Document]) -> str:
         context = self._build_context(context_docs)
@@ -70,8 +107,7 @@ class GenerationIntegrationModule:
             | self.llm
             | StrOutputParser()
         )
-        for chunk in chain.stream(query):
-            yield chunk
+        yield from self._nonempty_chunks(chain.stream(query))
 
     def generate_step_by_step_answer_stream(self, query: str, context_docs: List[Document]):
         context = self._build_context(context_docs, max_length=3200)
@@ -82,8 +118,7 @@ class GenerationIntegrationModule:
             | self.llm
             | StrOutputParser()
         )
-        for chunk in chain.stream(query):
-            yield chunk
+        yield from self._nonempty_chunks(chain.stream(query))
 
     def query_rewrite(self, query: str) -> str:
         prompt = PromptTemplate(
@@ -163,7 +198,7 @@ general：其他一般问题。
 
         for index, doc in enumerate(docs, 1):
             metadata_info = (
-                f"[Note {index}] "
+                f"[S{index}] "
                 f"title={doc.metadata.get('title', 'Untitled')} | "
                 f"topic={doc.metadata.get('topic', 'Unknown')} | "
                 f"section={doc.metadata.get('section_path', 'Unknown')} | "
@@ -188,6 +223,8 @@ general：其他一般问题。
 要求：
 - 用中文回答。
 - 如果上下文不足，明确说“当前笔记中没有找到足够依据”，不要编造。
+- 回答控制在 4 句话以内。
+- 关键结论必须带来源编号，例如 [S1]。
 - 优先引用笔记中的术语、标题或章节。
 - 对英文术语保留英文，并给出必要中文解释。
 
@@ -213,6 +250,8 @@ general：其他一般问题。
 限制：
 - 只能使用上下文中有依据的信息。
 - 如果资料不足，直接说明缺失点。
+- 回答尽量简短，优先列 3-5 个要点。
+- 每个关键结论必须带来源编号，例如 [S1]。
 - 不要把外部知识伪装成笔记内容。
 
 用户问题：{question}

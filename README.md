@@ -7,11 +7,11 @@
 - 面向英文机器学习 Markdown 笔记构建中文问答系统，支持中文问题检索英文资料。
 - 实现 Markdown 标题感知分块，并保留 `topic`、`chapter`、`title`、`section_path`、`chunk_id` 等元数据。
 - 使用多语 HuggingFace embedding、FAISS 向量检索、BM25 关键词检索和 RRF 融合重排。
-- 针对中文问题与英文语料的错配，加入中文到英文 retrieval query 改写。
+- 对明确的中文术语做确定性英文扩展；在线链路不再调用 LLM 做路由或 query rewrite。
 - 对列表类问题使用 topic 元数据直接列出文档，避免中文 query 在英文语料上召回不全。
 - 提供 Streamlit Web UI，展示回答、检索 query、source path 和 top-k chunks。
-- 提供 FastAPI 后端接口，并用 JSONL 日志记录 `question`、`retrieval_query`、`top_sources`、`latency_ms`、`stage`、`error` 和检索分项耗时。
-- 提供不调用 LLM 的离线检索评估脚本；当前 15 个测试 case 上 Top-1 source accuracy 为 40.0%，Top-3 source accuracy 为 73.3%，Top-3 topic accuracy 为 93.3%。
+- 提供 FastAPI SSE 主入口 `/v1/chat/stream`、debug 接口、Redis exact cache、MySQL best-effort 查询记录，以及 JSONL 业务日志。
+- 提供 50 条不调用 LLM 的离线检索评估集；它只衡量本地检索质量，不代表 FastAPI/Moonshot 端到端延迟。当前 35 条可索引 source case 的 Top-1 source accuracy 为 88.6%，Top-3 source accuracy 为 91.4%，Top-3 topic accuracy 为 94.3%。
 
 ## 项目目标
 
@@ -78,18 +78,20 @@ IndexConstructionModule
     v
 RetrievalOptimizationModule
     - FAISS semantic search
-    - BM25 keyword search
-    - RRF rerank
-    - metadata filtering by topic
+    - BM25 keyword search with title/path terms
+    - stable-chunk-id RRF rerank
+    - topic-first fallback
     |
     v
-GenerationIntegrationModule
-    - query routing
-    - Chinese-to-English retrieval query rewrite
+RAGService
+    - rule-first query routing and term expansion
+    - evidence gate before generation
     - Chinese answer generation
     |
     v
 FastAPI / Streamlit UI / CLI
+    - Redis exact cache
+    - MySQL query logs and feedback
 ```
 
 ## 核心实现
@@ -139,20 +141,22 @@ Linear Regression > Variable Selection
 
 ```text
 user question
-  -> query router: list / detail / general
+  -> rule-first router: list / detail / general
   -> topic detection: 从中文或英文问题中识别 Regression、Classification、Clustering 等主题
   -> retrieval query:
        list 问题：保留原问题，优先用 topic 元数据列出父文档
-       detail/general 问题：调用 LLM 把中文问题改写成英文检索 query
+       detail/general 问题：只使用规则术语表和 topic 做确定性扩展
   -> candidate retrieval:
-       FAISS semantic search: k=5
-       BM25 keyword search: k=5
+       FAISS semantic search: candidate_k >= 80
+       BM25 keyword search: candidate_k >= 80，索引 title/path/topic
   -> RRF rerank:
-       按 1 / (60 + rank) 融合两路排序
+       按稳定 chunk_id 融合两路排序，并对标题、文件名和 topic 命中加分
   -> optional metadata filter:
-       如果识别到 topic，先取 top_k * 3 候选，再按 metadata.topic 过滤
+       topic 命中优先；候选不足时保留非 topic 结果作为回退
   -> return top_k chunks
-  -> answer generation / source display
+  -> evidence gate
+       证据不足：不调用 LLM，直接 rejected 并返回 sources
+       证据充分：单次 LLM 流式生成，回答引用 [S1] 来源编号
 ```
 
 检索模块采用：
@@ -161,11 +165,11 @@ user question
 - BM25：关键词检索，适合 `OLS`、`p-value`、`K-means` 这类精确术语。
 - RRF：融合两路结果，降低单一路径漏召回风险。
 
-当前实现中，`hybrid_search(query, top_k)` 会先分别取 FAISS top-5 和 BM25 top-5，再做 RRF 融合，并返回最终 top-k。`metadata_filtered_search(query, filters, top_k)` 会先扩大候选到 `top_k * 3`，再用 chunk 元数据过滤，例如只保留 `topic=Classification` 的结果。
+当前实现中，`hybrid_search(query, top_k, candidate_k)` 会分别取至少 80 个 FAISS 与 BM25 候选，再做 RRF 融合并返回最终 top-k。BM25 的索引文本包含标题、路径和 topic，但返回给生成模块的仍是原始 chunk；`metadata_filtered_search` 会优先返回匹配 topic 的结果，候选不足时追加未过滤结果，避免空召回。
 
 列表类问题有一条特殊路径。例如“分类有哪些方法”会先识别到 `Classification` topic，然后直接从父文档元数据列出该主题下的文档，而不是完全依赖向量相似度。这是为了避免中文问题在英文语料上召回不全。
 
-详细问答则会先做中文到英文 query rewrite，例如“线性回归怎么做变量选择？”会被改写成 `linear regression variable selection feature selection p-value backward elimination`，再进入混合检索。
+详细问答中，包含已知术语的问题会直接补充英文检索词；例如“线性回归怎么做变量选择？”会扩展为 `linear regression variable selection feature selection p-value backward elimination`。未知术语不会触发在线 LLM 改写，而是按原问题和可识别 topic 进入检索与证据门控。
 
 检索模块会统计混合检索内部耗时：
 
@@ -173,12 +177,13 @@ user question
 - `bm25_ms`：BM25 关键词检索耗时。
 - `rrf_ms`：RRF 融合重排耗时。
 - `total_retrieval_ms`：一次 hybrid search 的总检索耗时。
+- `route_ms`、`expand_ms`、`generation_ms`：服务层的路由、术语扩展和生成耗时。
 
 这些指标会写入 JSONL 日志中的 `retrieval_metrics` 字段，便于判断检索阶段的瓶颈是否来自向量检索、关键词检索还是融合排序。
 
 ### 4. 中文问题适配英文资料
 
-由于数据是英文 Markdown，而用户主要用中文提问，系统会在详细问答时调用 LLM 将中文问题改写成英文检索 query。例如：
+由于数据是英文 Markdown，而用户主要用中文提问，系统通过术语表补充英文检索词。例如：
 
 ```text
 线性回归怎么做变量选择？
@@ -198,10 +203,13 @@ linear regression variable selection feature selection p-value backward eliminat
 .
 ├── code
 │   ├── api.py
+│   ├── cache.py
 │   ├── config.py
+│   ├── database.py
 │   ├── evaluate_retrieval.py
 │   ├── main.py
 │   ├── rag_logger.py
+│   ├── rag_service.py
 │   ├── requirements.txt
 │   ├── streamlit_app.py
 │   └── rag_modules
@@ -213,6 +221,9 @@ linear regression variable selection feature selection p-value backward eliminat
 │   └── ML-Notes-in-Markdown-master
 ├── docs
 │   └── backend_api_logging.md
+├── tests
+├── .env.example
+├── docker-compose.yml
 ├── .gitignore
 └── README.md
 ```
@@ -252,7 +263,13 @@ pip install -r code/requirements.txt
 pip install -r code\requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-生成最终回答、CLI 问答和 FastAPI 后端都需要设置 Moonshot API key：
+复制环境变量模板并设置 Moonshot、MySQL 和 Redis 参数：
+
+```bash
+cp .env.example .env
+```
+
+生成最终回答和 CLI 问答需要设置 `MOONSHOT_API_KEY`：
 
 ```powershell
 $env:MOONSHOT_API_KEY="your_api_key"
@@ -264,7 +281,9 @@ macOS / Linux：
 export MOONSHOT_API_KEY="your_api_key"
 ```
 
-不设置 API key 时，仍然可以运行离线检索评估脚本，也可以在 Streamlit UI 中关闭 LLM answer generation 和 LLM query rewrite，仅查看检索结果。`code/main.py` 和 `code/api.py` 会初始化 LLM，因此无 key 时会直接报错。
+Moonshot 只用于最终回答生成；在线请求最多调用一次 LLM。默认 `LLM_TEMPERATURE=1.0`、`LLM_MAX_TOKENS=800`。Kimi K2 系列当前只接受 `temperature=1`，生成模块会将该系列模型的其他配置值自动规范为 `1.0`。
+
+不设置 API key 时，仍可运行离线检索评估，也可以在 Streamlit UI 中关闭 LLM answer generation 和 query rewrite。FastAPI 仍可启动并响应 `/health`，但 `/ready` 会显示 `rag_ready=false`，依赖生成的问答接口会返回 `503`。
 
 ## CLI 运行
 
@@ -290,13 +309,21 @@ $env:TRANSFORMERS_OFFLINE='1'
 python code\main.py
 ```
 
-首次运行会构建 FAISS 索引并保存到：
+CLI 首次运行会构建 FAISS 索引并保存到：
 
 ```text
 code/vector_index_ml_notes
 ```
 
 该索引是可重新生成的产物，默认不建议提交到 GitHub。
+
+API 不会在启动或首个请求时构建索引。启动 API 前先运行离线发布命令：
+
+```bash
+python code/build_index.py --publish
+```
+
+该命令会完成 Markdown 清洗、空/过短文件检查、chunk、embedding、索引构建、检索评估和 manifest 写入。只有 manifest 中 `evaluation.status=passed` 的索引会被 API 加载。
 
 ## Streamlit Web UI
 
@@ -347,15 +374,17 @@ code/api.py
 ```text
 GET  /health
 GET  /ready
+POST /v1/chat/stream
 POST /chat
 POST /chat/debug
 POST /query
 POST /feedback
 ```
 
-本地启动方式。服务启动时会初始化 RAG 系统并加载或构建 FAISS 索引，因此需要提前设置 `MOONSHOT_API_KEY`：
+先运行 `python code/build_index.py --publish` 发布已验证索引，再复制 `.env.example` 为 `.env`，设置 Moonshot、MySQL 和 Redis 参数，并启动基础设施。API 采用生命周期初始化：`/health` 始终表示进程存活，`/ready` 只有已验证 RAG 索引和生成模块可用时才会返回 `ready=true`。MySQL 写入失败不会阻断问答，Redis 不可用会跳过 exact cache。
 
 ```bash
+docker compose up -d
 cd code
 uvicorn api:app --reload
 ```
@@ -371,13 +400,10 @@ http://127.0.0.1:8000
 ```bash
 curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/ready
-curl -X POST http://127.0.0.1:8000/chat \
+curl -N -X POST http://127.0.0.1:8000/v1/chat/stream \
   -H "Content-Type: application/json" \
-  -d '{"question":"线性回归是什么？"}'
+  -d '{"question":"线性回归是什么？","cache_mode":"default"}'
 curl -X POST http://127.0.0.1:8000/chat/debug \
-  -H "Content-Type: application/json" \
-  -d '{"question":"线性回归怎么做变量选择？"}'
-curl -X POST http://127.0.0.1:8000/query \
   -H "Content-Type: application/json" \
   -d '{"question":"线性回归怎么做变量选择？"}'
 curl -X POST http://127.0.0.1:8000/feedback \
@@ -385,7 +411,21 @@ curl -X POST http://127.0.0.1:8000/feedback \
   -d '{"query_id":1,"rating":"helpful","comment":"回答清楚"}'
 ```
 
-`/chat` 只返回最终回答：
+`/v1/chat/stream` 是主用户入口，事件合同固定为：
+
+```text
+accepted
+retrieval_started
+retrieval_done {sources}
+generation_started
+waiting_for_first_token
+token
+done | rejected | degraded | cancelled
+```
+
+证据不足时不会调用 LLM，会以 `rejected` 结束并返回最相关 sources；首 token 超过 10 秒会发送 `waiting_for_first_token`，超过 30 秒会取消生成并以 `degraded` 返回 sources 和 excerpts。`cache_mode=fresh` 会跳过 Redis exact cache 读取。
+
+`/chat` 和 `/query` 作为兼容端点保留，但不再是推荐用户入口。`/chat` 只返回最终回答：
 
 ```json
 {
@@ -393,29 +433,33 @@ curl -X POST http://127.0.0.1:8000/feedback \
 }
 ```
 
-`/chat/debug` 会额外返回 `route_type`、`retrieval_query` 和 `sources`，用于观察 RAG 中间链路：
+`/chat/debug` 会额外返回 `route_type`、`retrieval_query`、`gate_decision`、`sources` 和 `metrics`，用于观察 RAG 中间链路：
 
 ```json
 {
   "answer": "...",
   "route_type": "detail",
   "retrieval_query": "linear regression variable selection feature selection p-value backward elimination",
+  "gate_decision": "passed",
   "sources": [
     {
+      "id": "S1",
       "title": "Linear Regression",
       "topic": "Regression",
       "section": "Linear Regression > Variable Selection",
-      "path": "01-Regression/01-LinearRegression.md"
+      "path": "01-Regression/01-LinearRegression.md",
+      "excerpt": "..."
     }
-  ]
+  ],
+  "metrics": {}
 }
 ```
 
-`/query` 是给前端使用的正式问答接口。它会先查 exact cache，再查 semantic cache，未命中时走完整 RAG，并且无论是否命中缓存都会写入查询日志：
+`/query` 是兼容的同步接口。它会先查 Redis exact cache，未命中时走完整 RAG；Redis 不可用时自动降级为 RAG。MySQL 不可用时 `query_id` 为 `null`，问答仍返回：
 
 ```json
 {
-  "query_id": 1,
+  "query_id": null,
   "answer": "...",
   "sources": [],
   "latency_ms": 1234,
@@ -439,22 +483,18 @@ curl -X POST http://127.0.0.1:8000/feedback \
 logs/rag_queries.jsonl
 ```
 
-`/query`、`/feedback`、exact cache 和 semantic cache 的结构化数据默认写入本地 SQLite：
+`/query` 与 `/feedback` 的结构化数据写入 MySQL 的 `query_logs` 和 `feedback` 表；Redis 只保存 exact cache。本版本不实现 semantic cache。
+
+成功的 `/v1/chat/stream`、`/chat/debug` 和 `/query` 请求会写入一行 JSONL；默认只记录 trace 元数据和来源，不保存原始问题、答案和 excerpts。`debug=true` 或 `/chat/debug` 才保存这些调试内容。核心字段包括：
 
 ```text
-logs/query_api.sqlite3
-```
-
-表结构按 `query_logs`、`exact_cache`、`semantic_cache`、`feedback` 拆分，字段与后续迁移到 MySQL 的接口语义保持一致；其中 `query_logs` 包含 `cached`、`cache_type`、`similarity`，方便统计缓存命中率和常见问题分布。
-
-每条日志记录一行 JSON，核心字段包括：
-
-```text
-question
-retrieval_query
+trace_id
+question_hash
+retrieval_query_hash
 top_sources
 latency_ms
 stage
+terminal_event
 error
 retrieval_metrics
 ```
@@ -466,14 +506,18 @@ faiss_ms
 bm25_ms
 rrf_ms
 total_retrieval_ms
+route_ms
+expand_ms
+generation_ms
 ```
 
-示例：
+示意记录：
 
 ```json
 {
-  "question": "线性回归是什么",
-  "retrieval_query": "linear regression definition overview OLS ordinary least squares",
+  "trace_id": "...",
+  "question_hash": "...",
+  "retrieval_query_hash": "...",
   "top_sources": [
     {
       "title": "Linear Regression",
@@ -482,33 +526,24 @@ total_retrieval_ms
       "path": "01-Regression/01-LinearRegression.md"
     }
   ],
-  "latency_ms": 138806,
+  "latency_ms": 1234,
   "stage": "response",
   "error": null,
   "retrieval_metrics": {
-    "faiss_ms": 201,
-    "bm25_ms": 0,
-    "rrf_ms": 0,
-    "total_retrieval_ms": 202
+    "route_ms": 1,
+    "expand_ms": 0,
+    "faiss_ms": 24,
+    "bm25_ms": 3,
+    "rrf_ms": 1,
+    "total_retrieval_ms": 29,
+    "generation_ms": 1180
   }
 }
 ```
 
-这类日志可以判断一次请求是慢在检索、query rewrite 还是 LLM generation。例如如果 `latency_ms` 远大于 `total_retrieval_ms`，通常说明检索不是主要瓶颈。
+这类日志可以判断一次请求是慢在检索、术语扩展还是 LLM generation。例如如果 `latency_ms` 远大于 `total_retrieval_ms`，通常说明检索不是主要瓶颈。
 
-错误场景也会记录到日志。例如空问题会返回 `400`，并记录：
-
-```json
-{
-  "question": "",
-  "retrieval_query": null,
-  "top_sources": [],
-  "latency_ms": 1,
-  "stage": "validate",
-  "error": "400: Question cannot be empty",
-  "retrieval_metrics": null
-}
-```
+空问题会返回 `400`；RAG 未就绪会返回 `503`；SSE 主链路中的 Redis、MySQL、LLM 故障会降级为明确终态并写入 JSONL。
 
 更详细的后端接口、错误处理和日志设计说明见：
 
@@ -590,42 +625,37 @@ python code/evaluate_retrieval.py --top-k 3
 - Top-k topic accuracy
 - 每个 case 的 top-k 检索结果、topic、section 和 source path
 
-当前基线结果（`--top-k 3`）：
+评估集现包含 50 条无 LLM 的固定检索 query。其中 15 条预期来源为空或不存在，会显示为 `SKIP` 并从 source-recall 分母中剔除；它们仍保留在报告中，用于暴露数据质量问题。当前基线基于其余 35 条可索引 source case：
 
 ```text
-Cases: 15
-Top-1 source accuracy: 6/15 = 40.0%
-Top-3 source accuracy: 11/15 = 73.3%
-Top-3 topic accuracy: 14/15 = 93.3%
+python code/evaluate_retrieval.py --top-k 3
 ```
 
 评估指标含义：
 
 | 指标 | 含义 | 当前结果 |
 | --- | --- | --- |
-| Top-1 source accuracy | 第 1 个 chunk 的 `relative_path` 命中预期源文件 | 40.0% |
-| Top-3 source accuracy | 前 3 个 chunk 中任意一个命中预期源文件 | 73.3% |
-| Top-3 topic accuracy | 前 3 个 chunk 中任意一个命中预期主题 | 93.3% |
+| Top-1 source accuracy | 第 1 个 chunk 的 `relative_path` 命中预期源文件 | 31/35 = 88.6% |
+| Top-3 source accuracy | 前 3 个 chunk 中任意一个命中预期源文件 | 32/35 = 91.4% |
+| Top-3 topic accuracy | 前 3 个 chunk 中任意一个命中预期主题 | 33/35 = 94.3% |
 
-这个结果说明：主题召回整体可用，适合作为 RAG 答案的初筛依据；但精确 source 排序仍有优化空间，Top-1 结果不应被当成唯一依据。实际 UI 和 `/chat/debug` 会展示多个 source，方便用户判断召回是否可靠。
+验收目标为 Top-1 source accuracy 不低于 60%、Top-3 不低于 85%。实际 UI 和 `/chat/debug` 会展示多个 source，方便用户判断召回是否可靠。
 
 ## 失败案例分析
 
-本轮离线评估中，Top-3 source 未命中的 case 有 4 个：
+本轮评估中，主要数据问题是若干算法文件为空，无法生成 chunk；这些 case 会被标记为 `SKIP`。可索引 source case 中仍有少量概览类问题未命中预期 README：
 
 | Case | Query | 预期 source | 实际 Top-3 概况 | 可能原因 |
 | --- | --- | --- | --- | --- |
-| `decision_tree` | `decision tree classification algorithm` | `02-Classification/05-DecisionTree.md` | 召回 Naive Bayes 和 Classification README | query 中的 `classification algorithm` 与分类总览和 Naive Bayes 文档重叠较强，Decision Tree 文档自身有效文本较短，排序竞争力不足 |
-| `random_forest` | `random forest classification ensemble decision trees` | `02-Classification/06-RandomForest.md` | 召回 K-means、Classification README、Support Vector Regression | `forest`、`ensemble` 等关键词在短文档中支撑不足，语义检索被其他算法片段干扰，缺少强 metadata 约束 |
-| `gaussian_mixture` | `gaussian mixture model clustering expectation maximization` | `03-Clustering/03-GaussianMixtureModels.md` | 召回 Hierarchical Clustering、Linear Regression、Clustering README | 同属 Clustering 的概览内容被排到前面，目标文档可能因 chunk 内容短或标题权重不足没有进入 Top-3 |
-| `numpy_matrix` | `numpy matrix tutorial Python` | `00-Prerequisites/numpyMatrixTutorial.md` | 召回 Appendix 下的 Numpy 文档 | 语义上 Appendix Numpy 文档确实相关，但评估预期是 Prerequisites 中的旧教程文件，说明数据集中存在主题重复和路径命名不一致 |
+| `clustering_overview` | `clustering machine learning` | `03-Clustering/README.md` | 根 README 与其他主题概览 | 根目录概览文本对通用 query 的词法信号更强 |
+| `prerequisites_overview` | `machine learning prerequisites` | `00-Prerequisites/README.md` | 根 README 与 Deep Learning 概览 | 主题 README 信息密度低于根目录导航 |
 
 这些失败不代表系统完全无法回答对应问题，而是说明“精确源文件命中”仍不稳定。当前缓解方式包括：
 
 - 对列表类问题优先走 topic 元数据和父文档列表。
 - 在 UI 和 `/chat/debug` 中展示多个 source，而不是只展示 Top-1。
 - 使用 BM25 + FAISS + RRF 融合，减少单一路径召回偏差。
-- 在后续优化中给标题、文件名和 topic metadata 更高权重，尤其针对短文档和算法名明确的问题。
+- 对概览类问题优先使用 topic 元数据和父文档列表。
 
 ## Screenshots
 
@@ -641,22 +671,17 @@ Top-3 topic accuracy: 14/15 = 93.3%
 
 这个项目不是完整的机器学习教材问答系统，当前限制包括：
 
-- 当前评估集规模较小，仅包含 15 个离线检索测试 case。
+- 评估集有 50 条 query，但其中 15 条预期来源为空或不存在；修复这些数据文件后才能把它们纳入 source-recall 指标。
 - 生成质量依赖 Moonshot/Kimi API；未设置 API key 时无法生成最终 LLM 回答，但仍可运行检索、离线评估和 Streamlit 检索预览。
 - Markdown 中的图片公式目前只保留链接文本，尚未做 OCR 或公式解析。
-- 部分短文档或弱关键词文档，如 Decision Tree、Random Forest、Gaussian Mixture，仍存在精确 source 命中不稳定的问题。
+- 当前只提供 Redis exact cache；不引入 semantic cache。
 - 当前 Streamlit UI 和 FastAPI 后端主要用于本地演示，尚未做部署、鉴权或多用户并发支持。
 
 ## 后续计划
 
 优先级较高的改进：
 
-1. 扩大离线评估集，从 15 个 case 扩展到 50 个以上。
-2. 对比不同 top-k、chunk size、RRF 参数对 Top-1 / Top-k accuracy 的影响。
-3. 增加 Base LLM vs RAG 的回答质量对比。
-4. 优化短文档和弱关键词文档的 metadata filtering。
-5. 补充更多典型问答案例截图，覆盖 list、detail、LLM 失败 fallback 等场景。
-6. 清理标题展示格式，例如 `LogisticRegression` -> `Logistic Regression`。
-7. 将 `/chat` 也接入完整 JSONL 日志，并继续细化 `rewrite_ms`、`generation_ms` 等阶段耗时。
-8. 优化 detail/general 问题的英文检索 query 生成链路：优先尝试规则术语增强、外部翻译 API 或轻量翻译模型，减少默认 LLM query rewrite 带来的延迟；仅在翻译质量不足、首轮召回较差或复杂多轮问题中兜底调用 LLM，并通过离线评估对比 Top-1 / Top-k accuracy 和端到端延迟。
-9. 优化 query route 阶段，减少默认 LLM 分类调用：优先用规则识别明确的 list/detail/general 问题，例如“哪些/有什么/列出”归为 list，“为什么/怎么做/步骤/原理/优缺点”归为 detail，明显非知识库问题归为 general；对于规则置信度不足的 query，可进一步尝试基于少量标注样本的 embedding 相似度分类，仅在路由不确定或评估效果不足时兜底调用 LLM，从而把多数请求的主链路控制在一次 LLM answer generation。
+1. 补齐 15 个空或缺失的源 Markdown 文件，再把它们纳入 source-recall 指标。
+2. 记录 fresh 与 exact-cache 请求的 P50/P95 延迟和 Redis 命中率。
+3. 增加 Base LLM 与 RAG 的回答质量对比，并沉淀失败问题为评估 case。
+4. 增加前端反馈入口、鉴权、CORS 与部署配置。

@@ -33,7 +33,7 @@ def load_retrieval_stack() -> Tuple[DataPreparationModule, RetrievalOptimization
         DEFAULT_CONFIG.embedding_model,
         DEFAULT_CONFIG.index_save_path,
     )
-    vectorstore = index_module.load_index()
+    vectorstore = index_module.load_index(chunks)
     if vectorstore is None:
         vectorstore = index_module.build_vector_index(chunks)
         index_module.save_index()

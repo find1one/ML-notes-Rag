@@ -1,193 +1,560 @@
+"""FastAPI application for the ML Notes RAG service."""
+
+from contextlib import asynccontextmanager
+import asyncio
+import json
 import logging
-import time 
+import queue
+import threading
+import time
+import uuid
+from typing import Literal, Optional
 
-from typing import Optional
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
 
+from cache import get_exact_cache, set_exact_cache
+from config import DEFAULT_CONFIG
+from database import Database
 from main import MLNotesRAGSystem
-from rag_logger import log_rag_query
+from rag_logger import log_persistence_fallback, log_rag_query
+from rag_service import RAGExecution, RAGPrepared, RAGService, RAGUnavailableError
 
-app = FastAPI()
 logger = logging.getLogger(__name__)
-MAX_EMPTY_ANSWER_RETRIES = 2
 
-rag_system = MLNotesRAGSystem()
-rag_system.initialize_system()
-rag_system.build_knowledge_base()
 
 class ChatRequest(BaseModel):
-    question: str
+    question: str = Field(min_length=1, max_length=2000)
+
+
+class StreamChatRequest(ChatRequest):
+    cache_mode: Literal["default", "fresh"] = "default"
+    debug: bool = False
+
+
 class ChatResponse(BaseModel):
     answer: str
 
+
 class Source(BaseModel):
+    id: Optional[str] = None
     title: str
     topic: str
     section: str
     path: str
+    score: Optional[float] = None
+    excerpt: Optional[str] = None
+
 
 class ChatDebug(ChatResponse):
     route_type: str
     retrieval_query: Optional[str]
+    gate_decision: str
+    rejection_reason: Optional[str] = None
     sources: list[Source]
+    metrics: dict
 
 
-def _is_blank(text: str) -> bool:
-    return not text or not text.strip()
+class QueryResponse(ChatResponse):
+    query_id: Optional[int]
+    sources: list[Source]
+    latency_ms: int
+    cached: bool
+    cache_type: Optional[Literal["exact"]] = None
+    similarity: Optional[float] = None
 
 
-def _raise_empty_answer() -> None:
-    raise HTTPException(status_code=502, detail="LLM returned an empty response")
+class FeedbackRequest(BaseModel):
+    query_id: int = Field(gt=0)
+    rating: Literal["helpful", "not_helpful"]
+    comment: Optional[str] = Field(default=None, max_length=2000)
 
 
-def _generate_answer(question: str, route_type: str, retrieved_docs: list) -> str:
-    if route_type == "list":
-        parent_docs = rag_system.data_module.get_parent_documents(retrieved_docs)
-        return rag_system.generation_module.generate_list_answer(question, parent_docs)
-    if route_type == "detail":
-        return rag_system.generation_module.generate_step_by_step_answer(question, retrieved_docs)
-    return rag_system.generation_module.generate_basic_answer(question, retrieved_docs)
+class FeedbackResponse(BaseModel):
+    ok: bool = True
 
-## save the metadata of retrieved documents in the log
-def _format_top_sources(retrieved_docs: list) -> list[dict]:
-    sources = []
-    for doc in retrieved_docs:
-        metadata = doc.metadata
-        sources.append({
-            "title": metadata.get("title", "Untitled"),
-            "topic": metadata.get("topic", "Unknown topic"),
-            "section": metadata.get("section_path", "Unknown section"),
-            "path": metadata.get("relative_path", metadata.get("source", ""))
-        })
-    return sources
 
-@app.get("/health")# 健康检查端点
+TERMINAL_EVENTS = {"done", "rejected", "degraded", "cancelled"}
+
+
+def _get_service(request: Request) -> RAGService:
+    service = getattr(request.app.state, "rag_service", None)
+    if service is None or not service.ready:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="RAG service is not ready")
+    return service
+
+
+def _get_database(request: Request) -> Database:
+    database = getattr(request.app.state, "database", None)
+    if database is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database is not ready")
+    return database
+
+
+def _execution_or_http(service: RAGService, question: str) -> RAGExecution:
+    try:
+        return service.execute(question)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RAGUnavailableError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+def _write_query_best_effort(
+    request: Request,
+    trace_id: str,
+    question: str,
+    execution: RAGExecution,
+    latency_ms: int,
+    cached: bool,
+    debug: bool = False,
+) -> Optional[int]:
+    database = getattr(request.app.state, "database", None)
+    if database is None:
+        log_persistence_fallback(trace_id, question, execution.answer, execution.sources, "database_not_ready", debug=debug)
+        return None
+    try:
+        record = database.create_query(
+            question=question if debug else "",
+            retrieval_query=execution.retrieval_query,
+            route_type=execution.route_type,
+            topic=execution.topic,
+            answer=execution.answer if debug else "",
+            sources_json=json.dumps(execution.sources, ensure_ascii=False),
+            latency_ms=latency_ms,
+            cached=cached,
+            cache_type="exact" if cached else None,
+            similarity=None,
+        )
+        return record.id
+    except SQLAlchemyError as exc:
+        logger.warning("Failed to persist query log; continuing", exc_info=True)
+        log_persistence_fallback(trace_id, question, execution.answer, execution.sources, exc, debug=debug)
+        return None
+
+
+def _sse(event: str, payload: Optional[dict] = None) -> str:
+    data = json.dumps(payload or {}, ensure_ascii=False)
+    return f"event: {event}\ndata: {data}\n\n"
+
+
+def _cache_execution(payload: dict) -> RAGExecution:
+    return RAGExecution(
+        answer=payload["answer"],
+        route_type=payload["route_type"],
+        topic=payload.get("topic"),
+        retrieval_query=payload.get("retrieval_query"),
+        sources=payload["sources"],
+        metrics={"cache_hit": 1},
+        gate_decision=payload.get("gate_decision", "passed"),
+        terminal_event="done",
+    )
+
+
+def _cache_payload(execution: RAGExecution) -> dict:
+    return {
+        "answer": execution.answer,
+        "sources": execution.sources,
+        "route_type": execution.route_type,
+        "topic": execution.topic,
+        "retrieval_query": execution.retrieval_query,
+        "gate_decision": execution.gate_decision,
+    }
+
+
+def _token_chunks(answer: str, size: int = 24):
+    for start in range(0, len(answer), size):
+        yield answer[start:start + size]
+
+
+def _stream_answer_with_first_token_timeout(service: RAGService, prepared: RAGPrepared):
+    output: queue.Queue[tuple[str, Optional[str]]] = queue.Queue()
+
+    def worker():
+        try:
+            for chunk in service.stream_answer(prepared):
+                if chunk:
+                    output.put(("token", str(chunk)))
+            output.put(("done", None))
+        except Exception as exc:  # pragma: no cover - exercised through API tests with fakes
+            output.put(("error", str(exc)))
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    start = time.perf_counter()
+    waiting_sent = False
+    first_token_seen = False
+    while True:
+        elapsed = time.perf_counter() - start
+        if elapsed >= DEFAULT_CONFIG.orphan_request_timeout_seconds:
+            yield ("degraded", {
+                "reason": "orphan_request_timeout",
+                "sources": prepared.sources,
+                "excerpts": [source.get("excerpt") for source in prepared.sources],
+            })
+            return
+        if not first_token_seen and not waiting_sent and elapsed >= DEFAULT_CONFIG.first_token_wait_seconds:
+            waiting_sent = True
+            yield ("waiting_for_first_token", {"elapsed_ms": int(elapsed * 1000)})
+        if not first_token_seen and elapsed >= DEFAULT_CONFIG.first_token_timeout_seconds:
+            yield ("degraded", {
+                "reason": "first_token_timeout",
+                "sources": prepared.sources,
+                "excerpts": [source.get("excerpt") for source in prepared.sources],
+            })
+            return
+        timeout = 0.25 if not first_token_seen else DEFAULT_CONFIG.stream_idle_timeout_seconds
+        try:
+            kind, value = output.get(timeout=timeout)
+        except queue.Empty:
+            if first_token_seen:
+                yield ("degraded", {
+                    "reason": "stream_idle_timeout",
+                    "sources": prepared.sources,
+                    "excerpts": [source.get("excerpt") for source in prepared.sources],
+                })
+                return
+            continue
+        if kind == "token":
+            first_token_seen = True
+            yield ("token", {"text": value})
+        elif kind == "done":
+            return
+        elif kind == "error":
+            yield ("degraded", {
+                "reason": "llm_stream_error",
+                "error": value,
+                "sources": prepared.sources,
+                "excerpts": [source.get("excerpt") for source in prepared.sources],
+            })
+            return
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.rag_service = None
+    app.state.database = None
+    try:
+        rag = MLNotesRAGSystem(DEFAULT_CONFIG)
+        rag.initialize_system()
+        rag.load_knowledge_base()
+        app.state.rag_service = RAGService(rag)
+    except Exception:
+        logger.exception("RAG initialization failed")
+    try:
+        database = Database(DEFAULT_CONFIG.database_url, DEFAULT_CONFIG.database_connect_timeout)
+        database.initialize()
+        app.state.database = database
+    except Exception:
+        logger.exception("Database initialization failed")
+    yield
+
+
+app = FastAPI(title="ML Notes RAG API", version="2.0.0", lifespan=lifespan)
+
+
+@app.get("/health")
 def health_check():
     return {"status": "ok"}
 
 
-@app.get("/ready")# 就绪检查端点
-def readiness_check():
-    return {
-        "ready": bool(
-            rag_system
-            and rag_system.retrieval_module
-            and rag_system.generation_module
-        )
-    }
+@app.get("/ready")
+def readiness_check(request: Request):
+    service = getattr(request.app.state, "rag_service", None)
+    database = getattr(request.app.state, "database", None)
+    rag_ready = bool(service and service.ready)
+    return {"ready": rag_ready, "rag_ready": rag_ready, "database_ready": bool(database)}
 
-@app.post("/chat")
-def chat(request: ChatRequest) -> ChatResponse:
+
+@app.post("/v1/chat/stream")
+async def chat_stream(request: StreamChatRequest, http_request: Request):
+    trace_id = uuid.uuid4().hex
+    start = time.perf_counter()
     question = request.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question cannot be empty")
+    service = _get_service(http_request)
 
-    answer = ""
-    for attempt in range(MAX_EMPTY_ANSWER_RETRIES + 1):
-        answer = rag_system.ask_question(question, stream=False)
-        if not _is_blank(answer):# not empty, break the loop and return the answer
-            break
-        logger.warning("LLM returned an empty answer for /chat; retry=%s", attempt + 1)
+    async def events():
+        answer_parts: list[str] = []
+        cached = False
+        execution: Optional[RAGExecution] = None
+        terminal_event = "cancelled"
+        prepared: Optional[RAGPrepared] = None
+        try:
+            yield _sse("accepted", {"trace_id": trace_id})
+            cached_payload = None if request.cache_mode == "fresh" else get_exact_cache(question)
+            if cached_payload:
+                cached = True
+                execution = _cache_execution(cached_payload)
+                yield _sse("retrieval_started", {"cached": True})
+                yield _sse("retrieval_done", {"sources": execution.sources, "cached": True})
+                yield _sse("generation_started", {"cached": True})
+                for chunk in _token_chunks(execution.answer):
+                    answer_parts.append(chunk)
+                    yield _sse("token", {"text": chunk})
+                    await asyncio.sleep(0)
+                terminal_event = "done"
+                latency_ms = int((time.perf_counter() - start) * 1000)
+                query_id = _write_query_best_effort(http_request, trace_id, question, execution, latency_ms, cached, request.debug)
+                yield _sse("done", {"query_id": query_id, "cached": True})
+                return
 
-    if _is_blank(answer):
-        _raise_empty_answer()
-    return ChatResponse(answer=answer)
+            yield _sse("retrieval_started", {"cached": False})
+            prepared = service.prepare(question)
+            yield _sse("retrieval_done", {
+                "sources": prepared.sources,
+                "route_type": prepared.route_type,
+                "retrieval_query": prepared.retrieval_query,
+                "gate_decision": prepared.gate_decision,
+            })
+            if prepared.gate_decision != "passed":
+                execution = RAGExecution(
+                    answer="当前笔记中没有找到足够依据。",
+                    route_type=prepared.route_type,
+                    topic=prepared.topic,
+                    retrieval_query=prepared.retrieval_query,
+                    sources=prepared.sources,
+                    metrics=prepared.metrics,
+                    gate_decision=prepared.gate_decision,
+                    terminal_event="rejected",
+                    rejection_reason=prepared.rejection_reason,
+                )
+                terminal_event = "rejected"
+                latency_ms = int((time.perf_counter() - start) * 1000)
+                _write_query_best_effort(http_request, trace_id, question, execution, latency_ms, cached, request.debug)
+                yield _sse("rejected", {
+                    "reason": prepared.rejection_reason,
+                    "sources": prepared.sources,
+                })
+                return
 
-@app.post("/chat/debug")
-def chat_debug(request: ChatRequest) -> ChatDebug:
-    start_time = time.perf_counter()
+            yield _sse("generation_started", {"cached": False})
+            degraded_payload = None
+            for event_name, payload in _stream_answer_with_first_token_timeout(service, prepared):
+                if event_name == "token":
+                    answer_parts.append(payload["text"])
+                elif event_name == "degraded":
+                    degraded_payload = payload
+                    terminal_event = "degraded"
+                    yield _sse("degraded", payload)
+                    break
+                yield _sse(event_name, payload)
+                await asyncio.sleep(0)
+            if degraded_payload is not None:
+                execution = RAGExecution(
+                    answer="",
+                    route_type=prepared.route_type,
+                    topic=prepared.topic,
+                    retrieval_query=prepared.retrieval_query,
+                    sources=prepared.sources,
+                    metrics=prepared.metrics,
+                    gate_decision=prepared.gate_decision,
+                    terminal_event="degraded",
+                    rejection_reason=degraded_payload.get("reason"),
+                )
+                _write_query_best_effort(
+                    http_request,
+                    trace_id,
+                    question,
+                    execution,
+                    int((time.perf_counter() - start) * 1000),
+                    cached,
+                    request.debug,
+                )
+                return
+            answer = "".join(answer_parts).strip()
+            if not answer:
+                terminal_event = "degraded"
+                execution = RAGExecution(
+                    answer="",
+                    route_type=prepared.route_type,
+                    topic=prepared.topic,
+                    retrieval_query=prepared.retrieval_query,
+                    sources=prepared.sources,
+                    metrics=prepared.metrics,
+                    gate_decision=prepared.gate_decision,
+                    terminal_event="degraded",
+                    rejection_reason="llm_empty_stream",
+                )
+                _write_query_best_effort(
+                    http_request,
+                    trace_id,
+                    question,
+                    execution,
+                    int((time.perf_counter() - start) * 1000),
+                    cached,
+                    request.debug,
+                )
+                yield _sse("degraded", {
+                    "reason": "llm_empty_stream",
+                    "sources": prepared.sources,
+                    "excerpts": [source.get("excerpt") for source in prepared.sources],
+                })
+                return
+            execution = RAGExecution(
+                answer=answer,
+                route_type=prepared.route_type,
+                topic=prepared.topic,
+                retrieval_query=prepared.retrieval_query,
+                sources=prepared.sources,
+                metrics=prepared.metrics,
+                gate_decision=prepared.gate_decision,
+                terminal_event="done",
+            )
+            if answer:
+                set_exact_cache(question, _cache_payload(execution))
+            terminal_event = "done"
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            query_id = _write_query_best_effort(http_request, trace_id, question, execution, latency_ms, cached, request.debug)
+            yield _sse("done", {"query_id": query_id, "cached": False})
+        except asyncio.CancelledError:
+            terminal_event = "cancelled"
+            if prepared is not None:
+                execution = RAGExecution(
+                    answer="".join(answer_parts),
+                    route_type=prepared.route_type,
+                    topic=prepared.topic,
+                    retrieval_query=prepared.retrieval_query,
+                    sources=prepared.sources,
+                    metrics=prepared.metrics,
+                    gate_decision=prepared.gate_decision,
+                    terminal_event="cancelled",
+                )
+                _write_query_best_effort(http_request, trace_id, question, execution, int((time.perf_counter() - start) * 1000), cached, request.debug)
+            raise
+        except Exception as exc:
+            terminal_event = "degraded"
+            sources = prepared.sources if prepared is not None else []
+            metrics = prepared.metrics if prepared is not None else {}
+            execution = RAGExecution(
+                answer="",
+                route_type=prepared.route_type if prepared is not None else "unknown",
+                topic=prepared.topic if prepared is not None else None,
+                retrieval_query=prepared.retrieval_query if prepared is not None else None,
+                sources=sources,
+                metrics=metrics,
+                gate_decision=prepared.gate_decision if prepared is not None else "unknown",
+                terminal_event="degraded",
+                rejection_reason=str(exc),
+            )
+            _write_query_best_effort(http_request, trace_id, question, execution, int((time.perf_counter() - start) * 1000), cached, request.debug)
+            yield _sse("degraded", {
+                "reason": "service_error",
+                "error": str(exc),
+                "sources": sources,
+                "excerpts": [source.get("excerpt") for source in sources],
+            })
+        finally:
+            if execution is not None:
+                log_rag_query(
+                    question=question,
+                    retrieval_query=execution.retrieval_query,
+                    top_sources=execution.sources,
+                    latency_ms=int((time.perf_counter() - start) * 1000),
+                    stage="response",
+                    error=execution.rejection_reason,
+                    retrieval_metrics=execution.metrics,
+                    trace_id=trace_id,
+                    route_type=execution.route_type,
+                    gate_decision=execution.gate_decision,
+                    terminal_event=terminal_event,
+                    answer=execution.answer,
+                    debug=request.debug,
+                )
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@app.post("/chat", response_model=ChatResponse)
+def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
+    execution = _execution_or_http(_get_service(http_request), request.question.strip())
+    return ChatResponse(answer=execution.answer)
+
+
+@app.post("/chat/debug", response_model=ChatDebug)
+def chat_debug(request: ChatRequest, http_request: Request) -> ChatDebug:
+    trace_id = uuid.uuid4().hex
+    start = time.perf_counter()
     question = request.question.strip()
-    retrieval_query = None
-    retrieved_docs = []
-    retrieval_metrics = None
-    stage = "validate"
+    execution = _execution_or_http(_get_service(http_request), question)
+    latency_ms = int((time.perf_counter() - start) * 1000)
+    log_rag_query(
+        question,
+        execution.retrieval_query,
+        execution.sources,
+        latency_ms,
+        "response",
+        retrieval_metrics=execution.metrics,
+        trace_id=trace_id,
+        route_type=execution.route_type,
+        gate_decision=execution.gate_decision,
+        terminal_event=execution.terminal_event,
+        answer=execution.answer,
+        debug=True,
+    )
+    return ChatDebug(
+        answer=execution.answer,
+        route_type=execution.route_type,
+        retrieval_query=execution.retrieval_query,
+        gate_decision=execution.gate_decision,
+        rejection_reason=execution.rejection_reason,
+        sources=execution.sources,
+        metrics=execution.metrics,
+    )
+
+
+@app.post("/query", response_model=QueryResponse)
+def query(request: ChatRequest, http_request: Request) -> QueryResponse:
+    trace_id = uuid.uuid4().hex
+    start = time.perf_counter()
+    question = request.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+    cached_payload = get_exact_cache(question)
+    if cached_payload:
+        execution = _cache_execution(cached_payload)
+        cached = True
+    else:
+        execution = _execution_or_http(_get_service(http_request), question)
+        cached = False
+    latency_ms = int((time.perf_counter() - start) * 1000)
+    query_id = _write_query_best_effort(http_request, trace_id, question, execution, latency_ms, cached, False)
+    if not cached and execution.terminal_event == "done":
+        set_exact_cache(question, _cache_payload(execution))
+    log_rag_query(
+        question,
+        execution.retrieval_query,
+        execution.sources,
+        latency_ms,
+        "response",
+        retrieval_metrics=execution.metrics,
+        trace_id=trace_id,
+        route_type=execution.route_type,
+        gate_decision=execution.gate_decision,
+        terminal_event=execution.terminal_event,
+        answer=execution.answer,
+        debug=False,
+    )
+    return QueryResponse(
+        query_id=query_id,
+        answer=execution.answer,
+        sources=execution.sources,
+        latency_ms=latency_ms,
+        cached=cached,
+        cache_type="exact" if cached else None,
+    )
+
+
+@app.post("/feedback", response_model=FeedbackResponse)
+def feedback(request: FeedbackRequest, http_request: Request) -> FeedbackResponse:
     try:
-        if not question:
-            raise HTTPException(status_code=400, detail="Question cannot be empty")
-        
-        stage = "route"
-        route_type = rag_system.generation_module.query_router(question)
-        filters = rag_system._extract_filters_from_query(question)
-        
-        stage = "rewrite"
-        # 根据路由类型决定检索查询
-        if route_type == "list":
-            retrieval_query = question
-        else:
-            retrieval_query = rag_system.generation_module.query_rewrite(question)
-        
-        stage = "retrieval"
-        # 根据是否有过滤条件选择检索方法
-        if filters:
-            retrieved_docs = rag_system.retrieval_module.metadata_filtered_search(
-                retrieval_query,
-                filters,
-                top_k=rag_system.config.top_k,
-            )
-        else:
-            retrieved_docs = rag_system.retrieval_module.hybrid_search(
-                retrieval_query,
-                top_k=rag_system.config.top_k,
-            )
-        retrieval_metrics = rag_system.retrieval_module.last_metrics.copy()
-
-        if not retrieved_docs:
-            return ChatDebug(
-                answer="No relevant documents found",
-                route_type=route_type,
-                retrieval_query=retrieval_query,
-                sources=[]
-            )
-        stage = "generation"
-        answer = ""
-        for attempt in range(MAX_EMPTY_ANSWER_RETRIES + 1):
-            answer = _generate_answer(question, route_type, retrieved_docs)
-            if not _is_blank(answer):
-                break
-            logger.warning("LLM returned an empty answer for /chat/debug; retry=%s", attempt + 1)
-
-        if _is_blank(answer):
-            _raise_empty_answer()
-        
-        sources = []
-        for doc in retrieved_docs:
-            metadata = doc.metadata
-            sources.append(Source(
-                title=metadata.get("title", "Untitled"),
-                topic=metadata.get("topic", "Unknown topic"),
-                section=metadata.get("section_path", "Unknown section"),
-                path=metadata.get("relative_path", metadata.get("source", ""))
-            ))
-        stage = "response"
-        log_rag_query(
-            question=question,
-            retrieval_query=retrieval_query,
-            top_sources=_format_top_sources(retrieved_docs),
-            latency_ms=int((time.perf_counter() - start_time) * 1000),
-            stage=stage,
-            error=None,
-            retrieval_metrics=retrieval_metrics,
-        )
-        return ChatDebug(
-            answer=answer,
-            route_type=route_type,
-            retrieval_query=retrieval_query,
-            sources=sources
-        )
-    
-    except Exception as exc:
-        latency_ms = int((time.perf_counter() - start_time) * 1000)
-        log_rag_query(
-            question=question,
-            retrieval_query=retrieval_query,
-            top_sources=_format_top_sources(retrieved_docs),
-            latency_ms=latency_ms,
-            stage=stage,
-            error=str(exc),
-            retrieval_metrics=retrieval_metrics
-        )
-        raise
-
-@app.post("/query")
-def query(query:ChatRequest)->
+        _get_database(http_request).create_feedback(request.query_id, request.rating, request.comment)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        logger.exception("Failed to persist feedback")
+        raise HTTPException(status_code=503, detail="Failed to persist feedback") from exc
+    return FeedbackResponse()

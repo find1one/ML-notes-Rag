@@ -7,6 +7,7 @@ logs/
 *.pyd
 .env
 .env.*
+!.env.example
 analysis.md
 code/vector_index_ml_notes/
 .streamlit/secrets.toml

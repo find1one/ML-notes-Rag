@@ -39,6 +39,7 @@ class DataPreparationModule:
         self.documents: List[Document] = []
         self.chunks: List[Document] = []
         self.parent_child_map: Dict[str, str] = {}
+        self.skipped_files: List[Dict[str, Any]] = []
 
     def load_documents(self) -> List[Document]:
         logger.info("Loading Markdown notes from %s", self.data_path)
@@ -52,6 +53,14 @@ class DataPreparationModule:
             try:
                 content = md_file.read_text(encoding="utf-8")
                 relative_path = md_file.resolve().relative_to(data_root).as_posix()
+                body = content.strip()
+                if len(body) < 100:
+                    self.skipped_files.append({
+                        "path": relative_path,
+                        "reason": "empty_or_too_short",
+                        "size": len(content),
+                    })
+                    continue
                 parent_id = hashlib.md5(relative_path.encode("utf-8")).hexdigest()
 
                 doc = Document(
@@ -196,6 +205,7 @@ class DataPreparationModule:
                 if self.chunks
                 else 0
             ),
+            "skipped_files": self.skipped_files,
         }
 
     def export_metadata(self, output_path: str) -> None:

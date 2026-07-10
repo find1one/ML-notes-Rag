@@ -2,7 +2,9 @@
 检索优化模块
 """
 
+import hashlib
 import logging
+import re
 from typing import List, Dict, Any
 import time
 
@@ -25,6 +27,7 @@ class RetrievalOptimizationModule:
         """
         self.vectorstore = vectorstore
         self.chunks = chunks
+        self.chunk_by_id = {self._document_id(chunk): chunk for chunk in chunks}
         self.setup_retrievers()
         self.last_metrics = {}
 
@@ -40,7 +43,7 @@ class RetrievalOptimizationModule:
 
         # BM25检索器
         self.bm25_retriever = BM25Retriever.from_documents(
-            self.chunks,
+            [self._bm25_document(chunk) for chunk in self.chunks],
             k=5
         )
 
@@ -48,7 +51,7 @@ class RetrievalOptimizationModule:
 
         logger.info("检索器设置完成")
     
-    def hybrid_search(self, query: str, top_k: int = 3) -> List[Document]:
+    def hybrid_search(self, query: str, top_k: int = 3, candidate_k: int = None) -> List[Document]:
         """
         混合检索 - 结合向量检索和BM25检索，使用RRF重排
 
@@ -59,20 +62,23 @@ class RetrievalOptimizationModule:
         Returns:
             检索到的文档列表
         """
+        candidate_k = max(candidate_k or 0, top_k * 5, 80)
         # 分别获取向量检索和BM25检索结果
         retrieval_start = time.perf_counter()
 
         faiss_start = time.perf_counter()
-        vector_docs = self.vector_retriever.invoke(query)
+        vector_docs = self.vectorstore.similarity_search(query, k=candidate_k)
         faiss_ms = int((time.perf_counter() - faiss_start) * 1000)
 
         bm25_start = time.perf_counter()
+        self.bm25_retriever.k = candidate_k
         bm25_docs = self.bm25_retriever.invoke(query)
+        bm25_docs = [self.chunk_by_id.get(self._document_id(doc), doc) for doc in bm25_docs]
         bm25_ms = int((time.perf_counter() - bm25_start) * 1000)
 
         # 使用RRF重排
         rrf_start = time.perf_counter()
-        reranked_docs = self._rrf_rerank(vector_docs, bm25_docs)
+        reranked_docs = self._rrf_rerank(vector_docs, bm25_docs, query=query)
         rrf_ms = int((time.perf_counter() - rrf_start) * 1000)
 
         retrieval_ms = int((time.perf_counter() - retrieval_start) * 1000)
@@ -80,7 +86,8 @@ class RetrievalOptimizationModule:
             "faiss_ms": faiss_ms,
             "bm25_ms": bm25_ms,
             "rrf_ms": rrf_ms,
-            "total_retrieval_ms": retrieval_ms
+            "total_retrieval_ms": retrieval_ms,
+            "candidate_k": candidate_k,
         }
 
         logger.info(
@@ -131,9 +138,14 @@ class RetrievalOptimizationModule:
                 if len(filtered_docs) >= top_k:
                     break
         
-        return filtered_docs
+        if len(filtered_docs) >= top_k:
+            return filtered_docs
+        # A strict post-filter can discard every useful result when the candidate
+        # pool is sparse. Keep topic matches first, then return the best fallback.
+        filtered_ids = {self._document_id(doc) for doc in filtered_docs}
+        return (filtered_docs + [doc for doc in docs if self._document_id(doc) not in filtered_ids])[:top_k]
 
-    def _rrf_rerank(self, vector_docs: List[Document], bm25_docs: List[Document], k: int = 60) -> List[Document]:
+    def _rrf_rerank(self, vector_docs: List[Document], bm25_docs: List[Document], k: int = 60, query: str = "") -> List[Document]:
         """
         使用RRF (Reciprocal Rank Fusion) 算法重排文档
 
@@ -150,8 +162,7 @@ class RetrievalOptimizationModule:
 
         # 计算向量检索结果的RRF分数
         for rank, doc in enumerate(vector_docs):
-            # 使用文档内容的哈希作为唯一标识
-            doc_id = hash(doc.page_content)
+            doc_id = self._document_id(doc)
             doc_objects[doc_id] = doc
 
             # RRF公式: 1 / (k + rank)
@@ -162,7 +173,7 @@ class RetrievalOptimizationModule:
 
         # 计算BM25检索结果的RRF分数
         for rank, doc in enumerate(bm25_docs):
-            doc_id = hash(doc.page_content)
+            doc_id = self._document_id(doc)
             doc_objects[doc_id] = doc
 
             rrf_score = 1.0 / (k + rank + 1)
@@ -171,6 +182,8 @@ class RetrievalOptimizationModule:
             logger.debug(f"BM25检索 - 文档{rank+1}: RRF分数 = {rrf_score:.4f}")
 
         # 按最终RRF分数排序
+        for doc_id, doc in doc_objects.items():
+            doc_scores[doc_id] += self._metadata_boost(query, doc)
         sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
 
         # 构建最终结果
@@ -187,4 +200,32 @@ class RetrievalOptimizationModule:
 
         return reranked_docs
 
+    @staticmethod
+    def _document_id(doc: Document) -> str:
+        chunk_id = doc.metadata.get("chunk_id")
+        if chunk_id:
+            return str(chunk_id)
+        source = doc.metadata.get("relative_path", doc.metadata.get("source", ""))
+        return hashlib.sha256(f"{source}|{doc.page_content}".encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _metadata_boost(query: str, doc: Document) -> float:
+        query_terms = {term for term in re.findall(r"[a-z0-9][a-z0-9_-]+", query.lower()) if len(term) >= 3}
+        if not query_terms:
+            return 0.0
+        metadata_text = " ".join([
+            str(doc.metadata.get("title", "")),
+            str(doc.metadata.get("relative_path", "")),
+            str(doc.metadata.get("topic", "")),
+        ]).lower()
+        return min(0.10, 0.02 * sum(term in metadata_text for term in query_terms))
+
+    @staticmethod
+    def _bm25_document(doc: Document) -> Document:
+        """Index title/path tokens without leaking synthetic text into generation."""
+        metadata = dict(doc.metadata)
+        title = str(metadata.get("title", ""))
+        path = str(metadata.get("relative_path", "")).replace("/", " ").replace("-", " ").replace("_", " ")
+        topic = str(metadata.get("topic", ""))
+        prefix = " ".join([title, title, path, topic])
+        return Document(page_content=f"{prefix}\n{doc.page_content}", metadata=metadata)
