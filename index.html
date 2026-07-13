@@ -1,0 +1,122 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="/ML-notes-Rag/assets/index-D9ODmmbF.css" data-rsc-css-href="/ML-notes-Rag/assets/index-D9ODmmbF.css" data-precedence="vite-rsc/importer-resources"/><link rel="modulepreload" href="/ML-notes-Rag/assets/layout-segment-context-CGHiuf7p.js" crossorigin=""/><link rel="modulepreload" href="/ML-notes-Rag/assets/rolldown-runtime-S-ySWqyJ.js" crossorigin=""/><link rel="modulepreload" href="/ML-notes-Rag/assets/index-CGQni-XP.js" crossorigin=""/><link rel="modulepreload" href="/ML-notes-Rag/assets/framework-DjPHiq1u.js" crossorigin=""/><link rel="modulepreload" href="/ML-notes-Rag/assets/page-DC_0QUXf.js" crossorigin=""/><title>ML Notes RAG — 中文提问，英文知识，答案可追溯</title><meta name="description" content="一个结合多语向量检索、BM25、RRF 与证据闸门的机器学习笔记 RAG 系统。"/><meta property="og:title" content="ML Notes RAG — 中文提问，英文知识，答案可追溯"/><meta property="og:description" content="一个结合多语向量检索、BM25、RRF 与证据闸门的机器学习笔记 RAG 系统。"/><meta property="og:type" content="website"/><meta property="og:image" content="https://find1one.github.io/ML-notes-Rag/og.png"/><meta property="og:image:width" content="1200"/><meta property="og:image:height" content="630"/><meta name="twitter:card" content="summary_large_image"/><meta name="twitter:title" content="ML Notes RAG — 中文提问，英文知识，答案可追溯"/><meta name="twitter:description" content="一个结合多语向量检索、BM25、RRF 与证据闸门的机器学习笔记 RAG 系统。"/><meta name="twitter:image" content="https://find1one.github.io/ML-notes-Rag/og.png"/><script>self.__VINEXT_RSC_PARAMS__={}</script><script>self.__VINEXT_RSC_NAV__={"pathname":"/","searchParams":[]}</script><link rel="modulepreload" href="/ML-notes-Rag/assets/index-CGQni-XP.js" />
+<link rel="preload" href="/ML-notes-Rag/assets/_vinext_fonts/geist-8ac0455e797f/geist-ff2310f5.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/ML-notes-Rag/assets/_vinext_fonts/geist-8ac0455e797f/geist-875ccdd4.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/ML-notes-Rag/assets/_vinext_fonts/geist-8ac0455e797f/geist-52306abf.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/ML-notes-Rag/assets/_vinext_fonts/geist-8ac0455e797f/geist-001175b1.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/ML-notes-Rag/assets/_vinext_fonts/geist-8ac0455e797f/geist-98bbbccb.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/ML-notes-Rag/assets/_vinext_fonts/geist-mono-00e989178794/geist-mono-f6b33328.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/ML-notes-Rag/assets/_vinext_fonts/geist-mono-00e989178794/geist-mono-44e03052.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/ML-notes-Rag/assets/_vinext_fonts/geist-mono-00e989178794/geist-mono-0638449e.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/ML-notes-Rag/assets/_vinext_fonts/geist-mono-00e989178794/geist-mono-971fb274.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/ML-notes-Rag/assets/_vinext_fonts/geist-mono-00e989178794/geist-mono-44745446.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/ML-notes-Rag/assets/_vinext_fonts/geist-mono-00e989178794/geist-mono-013b2f2f.woff2" as="font" type="font/woff2" crossorigin />
+<style data-vinext-fonts>/* cyrillic-ext */
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/ML-notes-Rag/assets/_vinext_fonts/geist-8ac0455e797f/geist-ff2310f5.woff2) format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/ML-notes-Rag/assets/_vinext_fonts/geist-8ac0455e797f/geist-875ccdd4.woff2) format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/ML-notes-Rag/assets/_vinext_fonts/geist-8ac0455e797f/geist-52306abf.woff2) format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/ML-notes-Rag/assets/_vinext_fonts/geist-8ac0455e797f/geist-001175b1.woff2) format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/ML-notes-Rag/assets/_vinext_fonts/geist-8ac0455e797f/geist-98bbbccb.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+.__font_geist_0tvmz3h { font-family: 'Geist', sans-serif; }
+
+.__variable_geist_0tvmz3h { --font-geist-sans: 'Geist', sans-serif; }
+
+/* cyrillic-ext */
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/ML-notes-Rag/assets/_vinext_fonts/geist-mono-00e989178794/geist-mono-f6b33328.woff2) format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/ML-notes-Rag/assets/_vinext_fonts/geist-mono-00e989178794/geist-mono-44e03052.woff2) format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* symbols2 */
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/ML-notes-Rag/assets/_vinext_fonts/geist-mono-00e989178794/geist-mono-0638449e.woff2) format('woff2');
+  unicode-range: U+2000-2001, U+2004-2008, U+200A, U+23B8-23BD, U+2500-259F;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/ML-notes-Rag/assets/_vinext_fonts/geist-mono-00e989178794/geist-mono-971fb274.woff2) format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/ML-notes-Rag/assets/_vinext_fonts/geist-mono-00e989178794/geist-mono-44745446.woff2) format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/ML-notes-Rag/assets/_vinext_fonts/geist-mono-00e989178794/geist-mono-013b2f2f.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+.__font_geist_mono_1diim1n { font-family: 'Geist Mono', sans-serif; }
+
+.__variable_geist_mono_1diim1n { --font-geist-mono: 'Geist Mono', sans-serif; }
+</style>
+</head><body class="__variable_geist_0tvmz3h __variable_geist_mono_1diim1n"><main><nav class="nav shell" aria-label="主导航"><a class="brand" href="#top" aria-label="ML Notes RAG 首页"><span class="brandMark" aria-hidden="true"><i></i><i></i><i></i></span><span>ML NOTES <b>/ RAG</b></span></a><div class="navLinks"><a href="#pipeline">系统链路</a><a href="#evaluation">离线评估</a><a href="#engineering">工程实现</a></div><a class="navStatus" href="#demo"><span></span> SYSTEM READY</a></nav><section class="hero shell" id="top"><div class="heroCopy"><div class="eyebrow"><span>01</span> CROSS-LINGUAL RETRIEVAL SYSTEM</div><h1>让英文机器学习笔记，<em>可以被中文准确提问。</em></h1><p class="lede">一个从数据处理、混合检索到流式生成和离线评估的完整 RAG 原型。它不只给出答案，也把每条证据交还给你。</p><div class="actions"><a class="primary" href="#demo">运行查询 <span>↗</span></a><a class="secondary" href="#pipeline">查看系统链路 <span>↓</span></a></div><div class="microStats" aria-label="项目概况"><span><b>50</b> curated eval queries</span><span><b>2</b> retrieval channels</span><span><b>1</b> cited answer</span></div></div><div class="console" id="demo"><div class="consoleBar"><div class="dots"><i></i><i></i><i></i></div><span>retrieval_trace.log</span><b>LIVE</b></div><div class="queryBlock"><span class="prompt">$ QUERY / ZH-CN</span><h2>支持向量机如何找到最优分类边界？<i class="cursor"></i></h2><div class="exampleTabs" aria-label="切换演示问题"><button aria-pressed="true">0<!-- -->1</button><button aria-pressed="false">0<!-- -->2</button><button aria-pressed="false">0<!-- -->3</button></div></div><div class="traceList"><div class="trace" style="--delay:0ms"><span class="node cyan">1</span><div><small>ROUTE</small><p>detail · Classification</p></div><b>✓</b></div><div class="trace" style="--delay:80ms"><span class="node blue">2</span><div><small>EXPAND</small><p>support vector machine · margin · hyperplane</p></div><b>✓</b></div><div class="trace" style="--delay:160ms"><span class="node cyan">3</span><div><small>RETRIEVE</small><p>FAISS 80 + BM25 80 candidates</p></div><b>✓</b></div><div class="trace" style="--delay:240ms"><span class="node yellow">4</span><div><small>RERANK</small><p>RRF · title/path/topic boost</p></div><b>✓</b></div><div class="trace" style="--delay:320ms"><span class="node yellow">5</span><div><small>GATE</small><p>evidence passed · 0.92</p></div><b>✓</b></div><div class="trace" style="--delay:400ms"><span class="node cyan">6</span><div><small>STREAM</small><p>Chinese answer · 3 cited sources</p></div><b>✓</b></div></div><div class="answerBlock"><div class="answerHead"><span>GENERATED ANSWER</span><b>EVIDENCE VERIFIED</b></div><p>支持向量机通过最大化两类样本与决策超平面之间的间隔来寻找分类边界。距离边界最近的样本称为支持向量，它们决定了超平面的位置。[S1] 对于不可线性分离的数据，可以引入软间隔与核函数。[S2]</p><div class="source"><span>[S1]</span> <!-- -->02-Classification/03-SupportVectorMachines.md</div></div></div></section><section class="metrics shell" id="evaluation" aria-labelledby="evaluation-title"><div class="sectionLabel"><span>02</span><h2 id="evaluation-title">RETRIEVAL EVALUATION</h2><p>离线、可复现、不调用 LLM</p></div><div class="metricGrid"><article><small>TOP-1 SOURCE ACCURACY</small><strong>88.6<sup>%</sup></strong><div><i style="width:88.6%"></i></div><p>35 条可索引 source case</p></article><article><small>TOP-3 SOURCE ACCURACY</small><strong>91.4<sup>%</sup></strong><div><i style="width:91.4%"></i></div><p>目标文件进入前三结果</p></article><article><small>TOP-3 TOPIC ACCURACY</small><strong>94.3<sup>%</sup></strong><div><i style="width:94.3%"></i></div><p>跨语言主题命中率</p></article></div><p class="metricNote">* 50 条策划查询覆盖 Regression、Classification、Clustering、Deep Learning 等主题；指标衡量本地检索质量，不代表 LLM 端到端延迟。</p></section><section class="pipeline shell" id="pipeline"><div class="sectionLabel"><span>03</span><h2>ONE QUERY. TRACEABLE ALL THE WAY.</h2><p>规则优先，证据先行</p></div><div class="flow" role="list" aria-label="RAG 系统链路"><article role="listitem"><span>01</span><small>Markdown</small><h3>标题感知分块</h3><p>保留 topic / chapter / section path</p></article><article role="listitem"><span>02</span><small>Multilingual</small><h3>双通道召回</h3><p>FAISS semantic + BM25 keyword</p></article><article role="listitem"><span>03</span><small>RRF</small><h3>融合与重排</h3><p>稳定 chunk ID · 标题/路径加权</p></article><article role="listitem"><span>04</span><small>Evidence</small><h3>生成前闸门</h3><p>证据不足时拒绝调用 LLM</p></article><article role="listitem"><span>05</span><small>SSE</small><h3>引用式回答</h3><p>中文流式输出 · [S1] 可追溯</p></article></div></section><section class="engineering shell" id="engineering"><div class="engineeringIntro"><div class="sectionLabel"><span>04</span><h2>BUILT BEYOND THE DEMO</h2></div><h3>从“能回答”到<br/>“可调用、可观测、可退化”。</h3><p>项目覆盖 RAG 的完整服务边界：请求级调试、缓存、持久化、流式超时与降级策略，都有明确实现和自动化测试。</p></div><div class="capabilityGrid"><article><span>0<!-- -->1<!-- --> / <!-- -->API</span><h3>FastAPI + SSE</h3><p>统一 /v1/chat/stream 主入口，支持 token、done、rejected 与 degraded 事件。</p></article><article><span>0<!-- -->2<!-- --> / <!-- -->CACHE</span><h3>Redis exact cache</h3><p>相同问题快速命中；fresh 模式可显式绕过缓存。</p></article><article><span>0<!-- -->3<!-- --> / <!-- -->OBSERVE</span><h3>JSONL business logs</h3><p>以 trace_id 串联路由、召回、生成与降级状态。</p></article><article><span>0<!-- -->4<!-- --> / <!-- -->STORE</span><h3>MySQL best-effort</h3><p>查询与反馈持久化失败时不阻断主回答链路。</p></article><article><span>0<!-- -->5<!-- --> / <!-- -->SAFETY</span><h3>Evidence gate</h3><p>top source 与问题不匹配时直接拒答，并保留来源供检查。</p></article><article><span>0<!-- -->6<!-- --> / <!-- -->UX</span><h3>Streamlit UI</h3><p>显示检索 query、source path、top-k chunks 和最终回答。</p></article></div></section><footer class="footer shell"><div><span class="brandMark" aria-hidden="true"><i></i><i></i><i></i></span><b>ML NOTES / RAG</b></div><p>Chinese questions. English knowledge. Cited answers.</p><a href="#top">BACK TO TOP ↑</a></footer></main><script id="_R_">import("/ML-notes-Rag/assets/index-CGQni-XP.js")</script></body></html><script>self.__VINEXT_RSC_CHUNKS__=self.__VINEXT_RSC_CHUNKS__||[];self.__VINEXT_RSC_CHUNKS__.push("2:I[\"8c0f216c4604\",[],\"Children\",1]\n3:I[\"15c18cfaeeff\",[],\"LayoutSegmentProvider\",1]\n4:I[\"8c0f216c4604\",[],\"Slot\",1]\n5:I[\"593f344dc510\",[],\"RedirectBoundary\",1]\n:HL[\"/ML-notes-Rag/assets/index-D9ODmmbF.css\",\"style\"]\n")</script><script>self.__VINEXT_RSC_CHUNKS__=self.__VINEXT_RSC_CHUNKS__||[];self.__VINEXT_RSC_CHUNKS__.push("0:{\"__route\":\"route:/\",\"__interceptionContext\":null,\"__layoutIds\":[\"layout:/\"],\"__rootLayout\":\"/\",\"page:/\":\"$L1\",\"layout:/\":[[[[\"$\",\"link\",\"css:/assets/index-D9ODmmbF.css\",{\"rel\":\"stylesheet\",\"precedence\":\"vite-rsc/importer-resources\",\"href\":\"/ML-notes-Rag/assets/index-D9ODmmbF.css\",\"data-rsc-css-href\":\"/ML-notes-Rag/assets/index-D9ODmmbF.css\"}],\"$undefined\"],[\"$\",\"html\",null,{\"lang\":\"zh-CN\",\"children\":[\"$\",\"body\",null,{\"className\":\"__variable_geist_0tvmz3h __variable_geist_mono_1diim1n\",\"children\":[\"$\",\"$L2\",null,{}]}]}]],null],\"route:/\":[[[\"$\",\"meta\",null,{\"charSet\":\"utf-8\"}],[[\"$\",\"title\",\"0\",{\"children\":\"ML Notes RAG — 中文提问，英文知识，答案可追溯\"}],[\"$\",\"meta\",\"1\",{\"name\":\"description\",\"content\":\"一个结合多语向量检索、BM25、RRF 与证据闸门的机器学习笔记 RAG 系统。\"}],[\"$\",\"meta\",\"2\",{\"property\":\"og:title\",\"content\":\"ML Notes RAG — 中文提问，英文知识，答案可追溯\"}],[\"$\",\"meta\",\"3\",{\"property\":\"og:description\",\"content\":\"一个结合多语向量检索、BM25、RRF 与证据闸门的机器学习笔记 RAG 系统。\"}],[\"$\",\"meta\",\"4\",{\"property\":\"og:type\",\"content\":\"website\"}],[\"$\",\"meta\",\"5\",{\"property\":\"og:image\",\"content\":\"https://find1one.github.io/ML-notes-Rag/og.png\"}],[\"$\",\"meta\",\"6\",{\"property\":\"og:image:width\",\"content\":\"1200\"}],[\"$\",\"meta\",\"7\",{\"property\":\"og:image:height\",\"content\":\"630\"}],[\"$\",\"meta\",\"8\",{\"name\":\"twitter:card\",\"content\":\"summary_large_image\"}],[\"$\",\"meta\",\"9\",{\"name\":\"twitter:title\",\"content\":\"ML Notes RAG — 中文提问，英文知识，答案可追溯\"}],[\"$\",\"meta\",\"10\",{\"name\":\"twitter:description\",\"content\":\"一个结合多语向量检索、BM25、RRF 与证据闸门的机器学习笔记 RAG 系统。\"}],[\"$\",\"meta\",\"11\",{\"name\":\"twitter:image\",\"content\":\"https://find1one.github.io/ML-notes-Rag/og.png\"}]],[[\"$\",\"meta\",\"0\",{\"name\":\"viewport\",\"content\":\"width=device-width, initial-scale=1\"}]]],[\"$\",\"$L3\",null,{\"segmentMap\":{\"children\":[]},\"children\":[\"$\",\"$L4\",null,{\"id\":\"layout:/\",\"parallelSlots\":\"$undefined\",\"children\":[\"$\",\"$L5\",null,{\"children\":[\"$\",\"$L3\",null,{\"segmentMap\":{\"children\":[]},\"children\":[\"$\",\"$L4\",null,{\"id\":\"page:/\"}]}]}]}]}]],\"__layoutFlags\":{\"layout:/\":\"s\"},\"__artifactCompatibility\":{\"schemaVersion\":1,\"graphVersion\":\"app-route-graph:4uhn5s1wvoptc\",\"deploymentVersion\":\"b215710d-53b4-498f-b383-b9b7f7fb3f6c\",\"appElementsSchemaVersion\":1,\"rscPayloadSchemaVersion\":1,\"rootBoundaryId\":\"/\",\"renderEpoch\":null}}\n")</script><script>self.__VINEXT_RSC_CHUNKS__=self.__VINEXT_RSC_CHUNKS__||[];self.__VINEXT_RSC_CHUNKS__.push("6:I[\"6efdf509a785\",[],\"default\",1]\n1:[\"$\",\"$L6\",null,{\"params\":\"$@7\",\"searchParams\":\"$@8\"}]\n")</script><script>self.__VINEXT_RSC_CHUNKS__=self.__VINEXT_RSC_CHUNKS__||[];self.__VINEXT_RSC_CHUNKS__.push("7:{}\n8:{}\n")</script><script>self.__VINEXT_RSC_DONE__=true</script>
