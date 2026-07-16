@@ -9,6 +9,7 @@
 - [x] MySQL `query_logs` best-effort 写入、`feedback` 持久化与 Docker healthcheck
 - [x] 离线索引 manifest、稳定 RRF 去重、元数据加分和候选回退
 - [x] 50 条离线检索评估集及 SSE/服务层 pytest 基础覆盖
+- [x] Streamlit 通过 FastAPI SSE 接入 Redis cache、debug、query id 和 feedback
 
 ## 运行与验收
 

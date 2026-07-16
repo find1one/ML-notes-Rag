@@ -9,7 +9,7 @@
 - 使用多语 HuggingFace embedding、FAISS 向量检索、BM25 关键词检索和 RRF 融合重排。
 - 对明确的中文术语做确定性英文扩展；在线链路不再调用 LLM 做路由或 query rewrite。
 - 对列表类问题使用 topic 元数据直接列出文档，避免中文 query 在英文语料上召回不全。
-- 提供 Streamlit Web UI，展示回答、检索 query、source path 和 top-k chunks。
+- 提供 Streamlit Web UI，作为 FastAPI SSE 客户端展示回答与来源，并支持缓存策略、debug 和反馈。
 - 提供 FastAPI SSE 主入口 `/v1/chat/stream`、请求级 debug 模式、Redis exact cache、MySQL best-effort 查询记录，以及 JSONL 业务日志。
 - 提供 50 条不调用 LLM 的离线检索评估集；它只衡量本地检索质量，不代表 FastAPI/Moonshot 端到端延迟。当前 35 条可索引 source case 的 Top-1 source accuracy 为 88.6%，Top-3 source accuracy 为 91.4%，Top-3 topic accuracy 为 94.3%。
 
@@ -89,9 +89,9 @@ RAGService
     - Chinese answer generation
     |
     v
-FastAPI / Streamlit UI / CLI
-    - Redis exact cache
-    - MySQL query logs and feedback
+FastAPI / CLI
+    - FastAPI: Redis exact cache、MySQL query logs and feedback
+    - Streamlit UI: 通过 HTTP/SSE 调用 FastAPI
 ```
 
 ## 核心实现
@@ -203,6 +203,7 @@ linear regression variable selection feature selection p-value backward eliminat
 .
 ├── code
 │   ├── api.py
+│   ├── api_client.py
 │   ├── cache.py
 │   ├── config.py
 │   ├── database.py
@@ -220,8 +221,12 @@ linear regression variable selection feature selection p-value backward eliminat
 ├── data
 │   └── ML-Notes-in-Markdown-master
 ├── docs
-│   └── backend_api_logging.md
+│   ├── backend_api_logging.md
+│   └── superpowers/specs
+│       └── 2026-07-16-streamlit-fastapi-integration-design.md
 ├── tests
+├── AGENTS.md -> CLAUDE.md
+├── CLAUDE.md
 ├── .env.example
 ├── docker-compose.yml
 ├── .gitignore
@@ -281,9 +286,9 @@ macOS / Linux：
 export MOONSHOT_API_KEY="your_api_key"
 ```
 
-Moonshot 只用于最终回答生成；在线请求最多调用一次 LLM。默认 `LLM_TEMPERATURE=1.0`、`LLM_MAX_TOKENS=800`。Kimi K2 系列当前只接受 `temperature=1`，生成模块会将该系列模型的其他配置值自动规范为 `1.0`。
+Moonshot 只用于最终回答生成；在线请求最多调用一次 LLM。默认 `LLM_TEMPERATURE=0.6`、`LLM_MAX_TOKENS=800`。Kimi K2 系列当前只接受 `temperature=0.6`，生成模块会将该系列模型的其他配置值自动规范为 `0.6`。
 
-不设置 API key 时，仍可运行离线检索评估，也可以在 Streamlit UI 中关闭 LLM answer generation，仅查看确定性规则扩展后的检索结果。FastAPI 仍可启动并响应 `/health`，但 `/ready` 会显示 `rag_ready=false`，依赖生成的问答接口会返回 `503`。
+不设置 API key 时仍可运行离线检索评估。FastAPI 可以启动并响应 `/health`，但 `/ready` 会显示 `rag_ready=false`；Streamlit 会显示后端未就绪并禁用问答提交。
 
 ## CLI 运行
 
@@ -643,7 +648,7 @@ python code/evaluate_retrieval.py --top-k 3
 这个项目不是完整的机器学习教材问答系统，当前限制包括：
 
 - 评估集有 50 条 query，但其中 15 条预期来源为空或不存在；修复这些数据文件后才能把它们纳入 source-recall 指标。
-- 生成质量依赖 Moonshot/Kimi API；未设置 API key 时无法生成最终 LLM 回答，但仍可运行检索、离线评估和 Streamlit 检索预览。
+- 生成质量依赖 Moonshot/Kimi API；未设置 API key 时无法通过 FastAPI 或 Streamlit 问答，但仍可运行离线检索评估。
 - Markdown 中的图片公式目前只保留链接文本，尚未做 OCR 或公式解析。
 - 当前只提供 Redis exact cache；不引入 semantic cache。
 - 当前 Streamlit UI 和 FastAPI 后端主要用于本地演示，尚未做部署、鉴权或多用户并发支持。

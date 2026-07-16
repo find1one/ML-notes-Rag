@@ -1,8 +1,10 @@
 # Streamlit 与 FastAPI 联调设计
 
+> 状态：已于 2026-07-16 实施，代码提交为 `2d67b93`。
+
 ## 背景
 
-当前 Streamlit 直接初始化 `MLNotesRAGSystem` 和 `RAGService`，没有调用 FastAPI。其结果是 Streamlit 请求绕过了 `/v1/chat/stream` 中的 Redis exact cache、请求级 debug、MySQL 查询记录和 `query_id`，也无法通过 `/feedback` 提交反馈。即使 Redis 已有同一问题的答案，Streamlit 仍会重新检索和生成。
+改造前，Streamlit 直接初始化 `MLNotesRAGSystem` 和 `RAGService`，没有调用 FastAPI。其结果是 Streamlit 请求绕过了 `/v1/chat/stream` 中的 Redis exact cache、请求级 debug、MySQL 查询记录和 `query_id`，也无法通过 `/feedback` 提交反馈。即使 Redis 已有同一问题的答案，Streamlit 仍会重新检索和生成。
 
 ## 目标
 

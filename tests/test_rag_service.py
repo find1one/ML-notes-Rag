@@ -59,6 +59,9 @@ def test_gate_rejects_empty_evidence_without_generation():
         data_module=SimpleNamespace(),
         retrieval_module=SimpleNamespace(
             hybrid_search=lambda *args, **kwargs: [Document(page_content=" ", metadata={"topic": "Regression"})],
+            metadata_filtered_search=lambda *args, **kwargs: [
+                Document(page_content=" ", metadata={"topic": "Regression"})
+            ],
             last_metrics={},
         ),
     )

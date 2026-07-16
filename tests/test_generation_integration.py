@@ -4,7 +4,7 @@ from rag_modules.generation_integration import GenerationIntegrationModule
 
 
 def test_kimi_k2_temperature_is_normalized_to_supported_value():
-    assert GenerationIntegrationModule._normalize_temperature("kimi-k2.6", 0.2) == 1.0
+    assert GenerationIntegrationModule._normalize_temperature("kimi-k2.6", 0.2) == 0.6
 
 
 def test_non_k2_temperature_is_preserved():

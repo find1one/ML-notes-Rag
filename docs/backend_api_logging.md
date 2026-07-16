@@ -27,6 +27,16 @@ done | rejected | degraded | cancelled
 
 调试信息通过 `/v1/chat/stream` 请求体的 `debug=true` 开启，不再提供单独的同步或 debug 接口。
 
+## Streamlit 接入
+
+Streamlit 是 FastAPI 的纯客户端，不直接加载索引、模型或 Redis。运行前先确认 `/ready` 中 `rag_ready=true`，再设置后端地址并启动：
+
+```bash
+RAG_API_URL=http://127.0.0.1:8000 python -m streamlit run code/streamlit_app.py
+```
+
+页面缓存策略映射为 `cache_mode=default/fresh`，Debug 开关映射为请求体 `debug`。客户端逐条消费 SSE；只有 `done` 返回非空 `query_id` 时才允许调用 `/feedback`。MySQL 未就绪不会阻断回答，但会使反馈不可用。
+
 ## 降级策略
 
 - 证据门控失败时不调用 LLM，直接返回 `rejected`，并携带最相关 sources。
