@@ -16,5 +16,12 @@ code/vector_index_ml_notes/
 .mypy_cache/
 .ruff_cache/
 
+# Local notes and editor settings
+/architecture.md
+/.vscode/settings.json
+
+# Separate nested repository
+/site/
+
 Thumbs.db
 .DS_Store

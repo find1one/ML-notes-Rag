@@ -10,7 +10,7 @@
 - 对明确的中文术语做确定性英文扩展；在线链路不再调用 LLM 做路由或 query rewrite。
 - 对列表类问题使用 topic 元数据直接列出文档，避免中文 query 在英文语料上召回不全。
 - 提供 Streamlit Web UI，展示回答、检索 query、source path 和 top-k chunks。
-- 提供 FastAPI SSE 主入口 `/v1/chat/stream`、debug 接口、Redis exact cache、MySQL best-effort 查询记录，以及 JSONL 业务日志。
+- 提供 FastAPI SSE 主入口 `/v1/chat/stream`、请求级 debug 模式、Redis exact cache、MySQL best-effort 查询记录，以及 JSONL 业务日志。
 - 提供 50 条不调用 LLM 的离线检索评估集；它只衡量本地检索质量，不代表 FastAPI/Moonshot 端到端延迟。当前 35 条可索引 source case 的 Top-1 source accuracy 为 88.6%，Top-3 source accuracy 为 91.4%，Top-3 topic accuracy 为 94.3%。
 
 ## 项目目标
@@ -283,11 +283,11 @@ export MOONSHOT_API_KEY="your_api_key"
 
 Moonshot 只用于最终回答生成；在线请求最多调用一次 LLM。默认 `LLM_TEMPERATURE=1.0`、`LLM_MAX_TOKENS=800`。Kimi K2 系列当前只接受 `temperature=1`，生成模块会将该系列模型的其他配置值自动规范为 `1.0`。
 
-不设置 API key 时，仍可运行离线检索评估，也可以在 Streamlit UI 中关闭 LLM answer generation 和 query rewrite。FastAPI 仍可启动并响应 `/health`，但 `/ready` 会显示 `rag_ready=false`，依赖生成的问答接口会返回 `503`。
+不设置 API key 时，仍可运行离线检索评估，也可以在 Streamlit UI 中关闭 LLM answer generation，仅查看确定性规则扩展后的检索结果。FastAPI 仍可启动并响应 `/health`，但 `/ready` 会显示 `rag_ready=false`，依赖生成的问答接口会返回 `503`。
 
 ## CLI 运行
 
-CLI 会完成知识库构建、query routing、query rewrite、检索和最终回答生成，因此需要提前设置 `MOONSHOT_API_KEY`。
+CLI 会完成知识库构建、规则路由、确定性术语扩展、检索和最终回答生成，因此需要提前设置 `MOONSHOT_API_KEY`。
 
 Windows PowerShell：
 
@@ -372,14 +372,11 @@ code/api.py
 主要接口：
 
 ```text
-GET  /health
-GET  /ready
 POST /v1/chat/stream
-POST /chat
-POST /chat/debug
-POST /query
 POST /feedback
 ```
+
+运维探针 `GET /health` 和 `GET /ready` 继续保留，但不显示在 OpenAPI/Swagger 中。
 
 先运行 `python code/build_index.py --publish` 发布已验证索引，再复制 `.env.example` 为 `.env`，设置 Moonshot、MySQL 和 Redis 参数，并启动基础设施。API 采用生命周期初始化：`/health` 始终表示进程存活，`/ready` 只有已验证 RAG 索引和生成模块可用时才会返回 `ready=true`。MySQL 写入失败不会阻断问答，Redis 不可用会跳过 exact cache。
 
@@ -388,6 +385,26 @@ docker compose up -d
 cd code
 uvicorn api:app --reload
 ```
+
+如果使用 VS Code，也可以通过内置 task 一键启动本地开发环境：
+
+```text
+Cmd + Shift + P -> Tasks: Run Task -> dev: start all
+```
+
+该 task 会先运行 `docker compose up -d` 启动 MySQL 和 Redis，再用项目虚拟环境启动 FastAPI：
+
+```bash
+.venv/bin/python -m uvicorn api:app --reload
+```
+
+如果 Docker 容器已经在运行，可以只执行：
+
+```text
+Cmd + Shift + P -> Tasks: Run Task -> dev: start api
+```
+
+`dev: start api` 会设置 `HF_HUB_OFFLINE=1` 和 `TRANSFORMERS_OFFLINE=1`，避免启动时 Hugging Face 在线检查反复重试。停止 FastAPI 时，在 VS Code task 的 Terminal 中按 `Ctrl+C`；如果终端没有响应，可以点击 Terminal 面板右上角的垃圾桶图标结束任务。
 
 访问：
 
@@ -403,9 +420,6 @@ curl http://127.0.0.1:8000/ready
 curl -N -X POST http://127.0.0.1:8000/v1/chat/stream \
   -H "Content-Type: application/json" \
   -d '{"question":"线性回归是什么？","cache_mode":"default"}'
-curl -X POST http://127.0.0.1:8000/chat/debug \
-  -H "Content-Type: application/json" \
-  -d '{"question":"线性回归怎么做变量选择？"}'
 curl -X POST http://127.0.0.1:8000/feedback \
   -H "Content-Type: application/json" \
   -d '{"query_id":1,"rating":"helpful","comment":"回答清楚"}'
@@ -425,50 +439,6 @@ done | rejected | degraded | cancelled
 
 证据不足时不会调用 LLM，会以 `rejected` 结束并返回最相关 sources；首 token 超过 10 秒会发送 `waiting_for_first_token`，超过 30 秒会取消生成并以 `degraded` 返回 sources 和 excerpts。`cache_mode=fresh` 会跳过 Redis exact cache 读取。
 
-`/chat` 和 `/query` 作为兼容端点保留，但不再是推荐用户入口。`/chat` 只返回最终回答：
-
-```json
-{
-  "answer": "..."
-}
-```
-
-`/chat/debug` 会额外返回 `route_type`、`retrieval_query`、`gate_decision`、`sources` 和 `metrics`，用于观察 RAG 中间链路：
-
-```json
-{
-  "answer": "...",
-  "route_type": "detail",
-  "retrieval_query": "linear regression variable selection feature selection p-value backward elimination",
-  "gate_decision": "passed",
-  "sources": [
-    {
-      "id": "S1",
-      "title": "Linear Regression",
-      "topic": "Regression",
-      "section": "Linear Regression > Variable Selection",
-      "path": "01-Regression/01-LinearRegression.md",
-      "excerpt": "..."
-    }
-  ],
-  "metrics": {}
-}
-```
-
-`/query` 是兼容的同步接口。它会先查 Redis exact cache，未命中时走完整 RAG；Redis 不可用时自动降级为 RAG。MySQL 不可用时 `query_id` 为 `null`，问答仍返回：
-
-```json
-{
-  "query_id": null,
-  "answer": "...",
-  "sources": [],
-  "latency_ms": 1234,
-  "cached": false,
-  "cache_type": null,
-  "similarity": null
-}
-```
-
 `/feedback` 用于提交用户反馈：
 
 ```json
@@ -483,9 +453,9 @@ done | rejected | degraded | cancelled
 logs/rag_queries.jsonl
 ```
 
-`/query` 与 `/feedback` 的结构化数据写入 MySQL 的 `query_logs` 和 `feedback` 表；Redis 只保存 exact cache。本版本不实现 semantic cache。
+`/v1/chat/stream` 与 `/feedback` 的结构化数据写入 MySQL 的 `query_logs` 和 `feedback` 表；Redis 只保存 exact cache。本版本不实现 semantic cache。
 
-成功的 `/v1/chat/stream`、`/chat/debug` 和 `/query` 请求会写入一行 JSONL；默认只记录 trace 元数据和来源，不保存原始问题、答案和 excerpts。`debug=true` 或 `/chat/debug` 才保存这些调试内容。核心字段包括：
+成功的 `/v1/chat/stream` 请求会写入一行 JSONL；默认只记录 trace 元数据和来源，不保存原始问题、答案和 excerpts。请求设置 `debug=true` 时才保存这些调试内容。核心字段包括：
 
 ```text
 trace_id
@@ -639,7 +609,7 @@ python code/evaluate_retrieval.py --top-k 3
 | Top-3 source accuracy | 前 3 个 chunk 中任意一个命中预期源文件 | 32/35 = 91.4% |
 | Top-3 topic accuracy | 前 3 个 chunk 中任意一个命中预期主题 | 33/35 = 94.3% |
 
-验收目标为 Top-1 source accuracy 不低于 60%、Top-3 不低于 85%。实际 UI 和 `/chat/debug` 会展示多个 source，方便用户判断召回是否可靠。
+验收目标为 Top-1 source accuracy 不低于 60%、Top-3 不低于 85%。实际 UI 和 `/v1/chat/stream` 的 `retrieval_done` 事件会展示多个 source，方便用户判断召回是否可靠。
 
 ## 失败案例分析
 
@@ -653,7 +623,7 @@ python code/evaluate_retrieval.py --top-k 3
 这些失败不代表系统完全无法回答对应问题，而是说明“精确源文件命中”仍不稳定。当前缓解方式包括：
 
 - 对列表类问题优先走 topic 元数据和父文档列表。
-- 在 UI 和 `/chat/debug` 中展示多个 source，而不是只展示 Top-1。
+- 在 UI 和 `/v1/chat/stream` 中展示多个 source，而不是只展示 Top-1。
 - 使用 BM25 + FAISS + RRF 融合，减少单一路径召回偏差。
 - 对概览类问题优先使用 topic 元数据和父文档列表。
 

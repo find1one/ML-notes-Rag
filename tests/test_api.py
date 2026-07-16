@@ -187,38 +187,40 @@ def test_stream_empty_llm_stream_degrades(monkeypatch):
     assert _events(response.text)[-1] == "degraded"
 
 
-def test_query_cache_hit_feedback_and_debug(monkeypatch):
-    payloads = []
-    monkeypatch.setattr("api.get_exact_cache", lambda question: payloads.pop(0) if payloads else None)
-    monkeypatch.setattr("api.set_exact_cache", lambda question, payload: payloads.append(payload) or True)
+def test_feedback_accepts_existing_query_and_rejects_unknown_query(monkeypatch):
+    monkeypatch.setattr("api.get_exact_cache", lambda question: None)
+    monkeypatch.setattr("api.set_exact_cache", lambda question, payload: True)
     old_lifespan, client = _client()
     try:
-        first = client.post("/query", json={"question": "线性回归是什么"})
-        second = client.post("/query", json={"question": "  线性回归是什么  "})
+        stream = client.post("/v1/chat/stream", json={"question": "线性回归是什么"})
         feedback = client.post("/feedback", json={"query_id": 1, "rating": "helpful"})
         invalid = client.post("/feedback", json={"query_id": 99, "rating": "helpful"})
-        debug = client.post("/chat/debug", json={"question": "线性回归是什么"})
     finally:
         client.close()
         app.router.lifespan_context = old_lifespan
-    assert first.status_code == 200 and first.json()["cached"] is False
-    assert second.status_code == 200 and second.json()["cached"] is True
+    assert stream.status_code == 200
     assert feedback.status_code == 200
     assert invalid.status_code == 404
-    assert debug.json()["gate_decision"] == "passed"
 
 
-def test_health_ready_chat_and_blank_question():
+def test_health_ready_and_removed_compatibility_routes():
     old_lifespan, client = _client()
     try:
         health = client.get("/health")
         ready = client.get("/ready")
         chat = client.post("/chat", json={"question": "问题"})
-        blank = client.post("/query", json={"question": " "})
+        debug = client.post("/chat/debug", json={"question": "问题"})
+        query = client.post("/query", json={"question": "问题"})
     finally:
         client.close()
         app.router.lifespan_context = old_lifespan
     assert health.json() == {"status": "ok"}
     assert ready.json()["ready"] is True
-    assert chat.json() == {"answer": "answer [S1]"}
-    assert blank.status_code == 400
+    assert chat.status_code == 404
+    assert debug.status_code == 404
+    assert query.status_code == 404
+
+
+def test_openapi_exposes_only_business_routes():
+    paths = set(app.openapi()["paths"])
+    assert paths == {"/v1/chat/stream", "/feedback"}

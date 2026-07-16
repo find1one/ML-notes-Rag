@@ -81,6 +81,10 @@ class RAGService:
     def ready(self) -> bool:
         return bool(self.rag_system.retrieval_module and self.rag_system.generation_module)
 
+    @property
+    def retrieval_ready(self) -> bool:
+        return bool(self.rag_system.data_module and self.rag_system.retrieval_module)
+
     def execute(self, question: str) -> RAGExecution:
         prepared = self.prepare(question)
         if prepared.gate_decision != "passed":
@@ -99,13 +103,13 @@ class RAGService:
             gate_decision=prepared.gate_decision,
             terminal_event="done",
         )
-
+    # 基于prepare function的返回结果判断有没有足够依据来回答问题
     def prepare(self, question: str) -> RAGPrepared:
         question = question.strip()
         if not question:
             raise ValueError("Question cannot be empty")
-        if not self.ready:
-            raise RAGUnavailableError("RAG generation service is not ready")
+        if not self.retrieval_ready:
+            raise RAGUnavailableError("RAG retrieval service is not ready")
 
         metrics: dict[str, int] = {}
         route_start = time.perf_counter()
@@ -188,6 +192,7 @@ class RAGService:
             rejection_reason=prepared.rejection_reason,
         )
 
+    #真正的路由，根据用户问题的关键词来判断是list、detail还是general
     def _route(self, question: str) -> str:
         if any(keyword in question for keyword in self.LIST_KEYWORDS):
             return "list"
@@ -196,10 +201,14 @@ class RAGService:
         return "general"
 
     def _expand_query(self, question: str) -> str:
+        # 当term_map中有中文关键词存在于问题中时，将其替换为对应的英文关键词，以便更好地进行检索
         terms = [english for chinese, english in self.TERM_MAP.items() if chinese.lower() in question.lower()]
+        # 额外检查用户问题中是否包含已知主题或其别名，如果匹配到，则将标准化的主题名称加入检索查询中
         topic = DataPreparationModule.match_topic_from_query(question)
         if topic:
             terms.append(topic)
+
+        # 去重并将问题和英文关键词组合成最终的检索查询
         return f"{question} {' '.join(dict.fromkeys(terms))}".strip()
 
     def _gate_evidence(

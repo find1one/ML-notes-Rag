@@ -7,14 +7,11 @@
 主要入口：
 
 ```text
-GET  /health
-GET  /ready
 POST /v1/chat/stream
-POST /chat/debug
-POST /chat
-POST /query
 POST /feedback
 ```
+
+`GET /health` 和 `GET /ready` 是从 OpenAPI schema 隐藏的运维探针。
 
 `/v1/chat/stream` 是用户入口，返回 Server-Sent Events：
 
@@ -28,7 +25,7 @@ token
 done | rejected | degraded | cancelled
 ```
 
-`/chat/debug` 用于排障和评估，会返回 `route_type`、`retrieval_query`、`gate_decision`、`sources` 和 `metrics`。`/chat` 与 `/query` 仅作为兼容同步接口保留。
+调试信息通过 `/v1/chat/stream` 请求体的 `debug=true` 开启，不再提供单独的同步或 debug 接口。
 
 ## 降级策略
 
@@ -47,7 +44,7 @@ done | rejected | degraded | cancelled
 logs/rag_queries.jsonl
 ```
 
-默认日志只记录 trace 元数据和来源，不保存原始问题、答案和 excerpts。`/chat/debug` 或 `debug=true` 才会写入调试内容。
+默认日志只记录 trace 元数据和来源，不保存原始问题、答案和 excerpts。`debug=true` 时才会写入调试内容。
 
 核心字段：
 

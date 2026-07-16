@@ -41,28 +41,33 @@ class DataPreparationModule:
         self.parent_child_map: Dict[str, str] = {}
         self.skipped_files: List[Dict[str, Any]] = []
 
+    # 使用langchain封装好的Document对象，保存正文和元数据，方便下一步的chunk
     def load_documents(self) -> List[Document]:
         logger.info("Loading Markdown notes from %s", self.data_path)
-
+        
+        # 返回路径的绝对路径并检查其是否存在
         data_root = Path(self.data_path).resolve()
         if not data_root.exists():
             raise FileNotFoundError(f"Data path does not exist: {self.data_path}")
 
         documents: List[Document] = []
+
+        # 遍历所有 md格式文件(rglob(*.md))，读取内容，获取相对路径，检查内容长度，生成父id
         for md_file in sorted(data_root.rglob("*.md")):
             try:
                 content = md_file.read_text(encoding="utf-8")
                 relative_path = md_file.resolve().relative_to(data_root).as_posix()
-                body = content.strip()
-                if len(body) < 100:
+                body = content.strip() # 返回去掉首尾空白字符的字符串
+                if len(body) < 100: #字符串长度小于一百不参考
                     self.skipped_files.append({
                         "path": relative_path,
                         "reason": "empty_or_too_short",
                         "size": len(content),
                     })
                     continue
-                parent_id = hashlib.md5(relative_path.encode("utf-8")).hexdigest()
+                parent_id = hashlib.md5(relative_path.encode("utf-8")).hexdigest()#16进制hash制
 
+                # langchain中的Document对象，包含page_content和metadata两个属性
                 doc = Document(
                     page_content=content,
                     metadata={
@@ -81,13 +86,15 @@ class DataPreparationModule:
         logger.info("Loaded %s Markdown documents", len(documents))
         return documents
 
+    # 根据文档内容和文件名增强元数据，包括标题、主题、章节和节路径
     def _enhance_metadata(self, doc: Document) -> None:
         source = Path(doc.metadata.get("source", ""))
         relative_path = doc.metadata.get("relative_path", source.name)
-        parts = Path(relative_path).parts
+        parts = Path(relative_path).parts #相对路径拆成多个parts Path("Regression/Linear Regression.md").parts -- ("Regression", "Linear Regression.md")
 
         chapter = parts[0] if len(parts) > 1 else "Root"
-        topic = self._topic_from_chapter(chapter)
+        topic = self._topic_from_chapter(chapter) # 获得topic，详情见_topic_from_chapter方法
+        # 先尝试从 Markdown 正文中提取一级标题；如果正文中没有标题，就使用文件名生成标题。
         title = self._extract_title(doc.page_content) or self._title_from_filename(source.stem)
 
         doc.metadata.update(
@@ -250,6 +257,7 @@ class DataPreparationModule:
 
     @classmethod
     def match_topic_from_query(cls, query: str) -> Optional[str]:
+        # 检查用户问题中是否包含已知主题或其别名，如果匹配到，则通过_display_topic返回标准化的主题名称,如果没匹配到返回None
         normalized = query.lower()
         for topic, aliases in cls.TOPIC_ALIASES.items():
             if topic in normalized or any(alias.lower() in normalized for alias in aliases):
@@ -259,9 +267,9 @@ class DataPreparationModule:
     @staticmethod
     def _extract_title(content: str) -> Optional[str]:
         for line in content.splitlines():
-            match = re.match(r"^\s*#\s+(.+?)\s*$", line)
+            match = re.match(r"^\s*#\s+(.+?)\s*$", line) #匹配以#开头的标题行，提取标题文本
             if match:
-                return match.group(1).strip()
+                return match.group(1).strip() #取出第一个括号 (.+?) 捕获到的内容，也就是标题文字。
         return None
 
     @staticmethod
@@ -270,13 +278,15 @@ class DataPreparationModule:
         title = title.replace("-", " ").replace("_", " ")
         return title.strip() or stem
 
+    # 从章节中提取主题并更改格式
     @classmethod
     def _topic_from_chapter(cls, chapter: str) -> str:
-        raw = re.sub(r"^\d+[-_]", "", chapter)
-        raw = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", raw)
-        raw = raw.replace("-", " ").replace("_", " ").strip()
-        return cls._display_topic(raw.lower())
+        raw = re.sub(r"^\d+[-_]", "", chapter) #\d+一个或多个数字，[-_]一个"-"或"_"，^表示开头，替换为空字符串。必须是01_之类的情况
+        raw = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", raw) #在小写字母后面紧跟大写字母的地方插入空格，"DeepLearning" -> "Deep Learning"
+        raw = raw.replace("-", " ").replace("_", " ").strip() #横杠和下划线都替换成空格，并且去掉首位空格
+        return cls._display_topic(raw.lower()) #全变小写，再传给_display_topic。
 
+    # 如果在known找到，返回标准化的主题名称，否则返回首字母大写的主题名称
     @staticmethod
     def _display_topic(topic: str) -> str:
         known = {

@@ -2,8 +2,8 @@
 
 ## 已完成
 
-- [x] FastAPI `/health`、`/ready`、`/chat`、`/chat/debug`、`/query`、`/feedback`
-- [x] FastAPI SSE 主入口 `/v1/chat/stream`
+- [x] FastAPI 仅保留 `/v1/chat/stream`、`/feedback` 两个业务接口
+- [x] `/health`、`/ready` 运维探针从 OpenAPI schema 隐藏
 - [x] 统一 RAGService 检索、证据门控、生成与分阶段耗时日志
 - [x] Redis exact cache，故障自动降级
 - [x] MySQL `query_logs` best-effort 写入、`feedback` 持久化与 Docker healthcheck

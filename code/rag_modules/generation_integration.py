@@ -9,14 +9,14 @@ from typing import List
 from langchain_community.chat_models.moonshot import MoonshotChat
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 
 logger = logging.getLogger(__name__)
 
 
 class GenerationIntegrationModule:
-    """Route, rewrite, and answer questions using retrieved ML-note context."""
+    """Generate grounded answers from retrieved ML-note context."""
 
     def __init__(self, model_name: str = "kimi-k2.6", temperature: float = 0.6, max_tokens: int = 2048):
         self.model_name = model_name
@@ -119,57 +119,6 @@ class GenerationIntegrationModule:
             | StrOutputParser()
         )
         yield from self._nonempty_chunks(chain.stream(query))
-
-    def query_rewrite(self, query: str) -> str:
-        prompt = PromptTemplate(
-            template="""
-你是机器学习笔记检索查询改写器。用户可能用中文提问，但知识库是英文 Markdown 笔记。
-
-请把问题改写成更适合检索英文机器学习笔记的短查询：
-- 保留原意。
-- 补充关键英文术语。
-- 如果用户问题已经包含清晰英文术语，可以直接返回原问题。
-- 不要回答问题，只输出最终检索查询。
-
-示例：
-中文：线性回归怎么做变量选择
-输出：linear regression variable selection feature selection p-value backward elimination
-
-中文：K-means 聚类的步骤
-输出：K-means clustering algorithm steps
-
-原始问题：{query}
-最终检索查询：""",
-            input_variables=["query"],
-        )
-        chain = (
-            {"query": RunnablePassthrough()}
-            | prompt
-            | self.llm
-            | StrOutputParser()
-        )
-        rewritten = chain.invoke(query).strip()
-        logger.info("Query rewritten: %r -> %r", query, rewritten)
-        return rewritten or query
-
-    def query_router(self, query: str) -> str:
-        prompt = ChatPromptTemplate.from_template("""
-请把用户的问题分类为以下三类之一，只返回 list、detail 或 general。
-
-list：用户想要主题、算法、文档或知识点列表。
-detail：用户想要解释某个概念、算法步骤、公式、假设、优缺点或使用场景。
-general：其他一般问题。
-
-用户问题：{query}
-分类结果：""")
-        chain = (
-            {"query": RunnablePassthrough()}
-            | prompt
-            | self.llm
-            | StrOutputParser()
-        )
-        result = chain.invoke(query).strip().lower()
-        return result if result in {"list", "detail", "general"} else "general"
 
     def generate_list_answer(self, query: str, context_docs: List[Document]) -> str:
         if not context_docs:

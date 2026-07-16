@@ -5,7 +5,14 @@ from pathlib import Path
 from typing import Any, Dict
 import os
 
+from dotenv import load_dotenv
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# Load the repository-level environment file for every entry point (uvicorn,
+# CLI scripts, tests, and Streamlit).  IDE-specific env-file settings are not
+# applied when the API is started from a regular shell.
+load_dotenv(PROJECT_ROOT / ".env")
 
 
 def _env_int(name: str, default: int) -> int:

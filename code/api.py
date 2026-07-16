@@ -20,7 +20,7 @@ from config import DEFAULT_CONFIG
 from database import Database
 from main import MLNotesRAGSystem
 from rag_logger import log_persistence_fallback, log_rag_query
-from rag_service import RAGExecution, RAGPrepared, RAGService, RAGUnavailableError
+from rag_service import RAGExecution, RAGPrepared, RAGService
 
 logger = logging.getLogger(__name__)
 
@@ -32,38 +32,6 @@ class ChatRequest(BaseModel):
 class StreamChatRequest(ChatRequest):
     cache_mode: Literal["default", "fresh"] = "default"
     debug: bool = False
-
-
-class ChatResponse(BaseModel):
-    answer: str
-
-
-class Source(BaseModel):
-    id: Optional[str] = None
-    title: str
-    topic: str
-    section: str
-    path: str
-    score: Optional[float] = None
-    excerpt: Optional[str] = None
-
-
-class ChatDebug(ChatResponse):
-    route_type: str
-    retrieval_query: Optional[str]
-    gate_decision: str
-    rejection_reason: Optional[str] = None
-    sources: list[Source]
-    metrics: dict
-
-
-class QueryResponse(ChatResponse):
-    query_id: Optional[int]
-    sources: list[Source]
-    latency_ms: int
-    cached: bool
-    cache_type: Optional[Literal["exact"]] = None
-    similarity: Optional[float] = None
 
 
 class FeedbackRequest(BaseModel):
@@ -91,15 +59,6 @@ def _get_database(request: Request) -> Database:
     if database is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database is not ready")
     return database
-
-
-def _execution_or_http(service: RAGService, question: str) -> RAGExecution:
-    try:
-        return service.execute(question)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except RAGUnavailableError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 def _write_query_best_effort(
@@ -255,12 +214,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ML Notes RAG API", version="2.0.0", lifespan=lifespan)
 
 
-@app.get("/health")
+@app.get("/health", include_in_schema=False)
 def health_check():
     return {"status": "ok"}
 
 
-@app.get("/ready")
+@app.get("/ready", include_in_schema=False)
 def readiness_check(request: Request):
     service = getattr(request.app.state, "rag_service", None)
     database = getattr(request.app.state, "database", None)
@@ -466,86 +425,6 @@ async def chat_stream(request: StreamChatRequest, http_request: Request):
                 )
 
     return StreamingResponse(events(), media_type="text/event-stream")
-
-
-@app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
-    execution = _execution_or_http(_get_service(http_request), request.question.strip())
-    return ChatResponse(answer=execution.answer)
-
-
-@app.post("/chat/debug", response_model=ChatDebug)
-def chat_debug(request: ChatRequest, http_request: Request) -> ChatDebug:
-    trace_id = uuid.uuid4().hex
-    start = time.perf_counter()
-    question = request.question.strip()
-    execution = _execution_or_http(_get_service(http_request), question)
-    latency_ms = int((time.perf_counter() - start) * 1000)
-    log_rag_query(
-        question,
-        execution.retrieval_query,
-        execution.sources,
-        latency_ms,
-        "response",
-        retrieval_metrics=execution.metrics,
-        trace_id=trace_id,
-        route_type=execution.route_type,
-        gate_decision=execution.gate_decision,
-        terminal_event=execution.terminal_event,
-        answer=execution.answer,
-        debug=True,
-    )
-    return ChatDebug(
-        answer=execution.answer,
-        route_type=execution.route_type,
-        retrieval_query=execution.retrieval_query,
-        gate_decision=execution.gate_decision,
-        rejection_reason=execution.rejection_reason,
-        sources=execution.sources,
-        metrics=execution.metrics,
-    )
-
-
-@app.post("/query", response_model=QueryResponse)
-def query(request: ChatRequest, http_request: Request) -> QueryResponse:
-    trace_id = uuid.uuid4().hex
-    start = time.perf_counter()
-    question = request.question.strip()
-    if not question:
-        raise HTTPException(status_code=400, detail="Question cannot be empty")
-    cached_payload = get_exact_cache(question)
-    if cached_payload:
-        execution = _cache_execution(cached_payload)
-        cached = True
-    else:
-        execution = _execution_or_http(_get_service(http_request), question)
-        cached = False
-    latency_ms = int((time.perf_counter() - start) * 1000)
-    query_id = _write_query_best_effort(http_request, trace_id, question, execution, latency_ms, cached, False)
-    if not cached and execution.terminal_event == "done":
-        set_exact_cache(question, _cache_payload(execution))
-    log_rag_query(
-        question,
-        execution.retrieval_query,
-        execution.sources,
-        latency_ms,
-        "response",
-        retrieval_metrics=execution.metrics,
-        trace_id=trace_id,
-        route_type=execution.route_type,
-        gate_decision=execution.gate_decision,
-        terminal_event=execution.terminal_event,
-        answer=execution.answer,
-        debug=False,
-    )
-    return QueryResponse(
-        query_id=query_id,
-        answer=execution.answer,
-        sources=execution.sources,
-        latency_ms=latency_ms,
-        cached=cached,
-        cache_type="exact" if cached else None,
-    )
 
 
 @app.post("/feedback", response_model=FeedbackResponse)
