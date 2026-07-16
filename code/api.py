@@ -164,7 +164,14 @@ def _stream_answer_with_first_token_timeout(service: RAGService, prepared: RAGPr
                 "excerpts": [source.get("excerpt") for source in prepared.sources],
             })
             return
-        timeout = 0.25 if not first_token_seen else DEFAULT_CONFIG.stream_idle_timeout_seconds
+        if first_token_seen:
+            timeout = DEFAULT_CONFIG.stream_idle_timeout_seconds
+        else:
+            timeout = min(
+                0.25,
+                max(0.001, DEFAULT_CONFIG.first_token_timeout_seconds - elapsed),
+                max(0.001, DEFAULT_CONFIG.orphan_request_timeout_seconds - elapsed),
+            )
         try:
             kind, value = output.get(timeout=timeout)
         except queue.Empty:

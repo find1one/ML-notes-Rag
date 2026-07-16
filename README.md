@@ -327,21 +327,20 @@ python code/build_index.py --publish
 
 ## Streamlit Web UI
 
-项目提供了一个 Streamlit 界面，用于展示回答和检索来源。
+项目提供了一个 Streamlit 界面。Streamlit 是 FastAPI 的纯客户端，问答统一通过 `/v1/chat/stream` 完成，因此 Redis exact cache、debug 日志、MySQL query id 和反馈行为与直接调用 API 完全一致。启动 Streamlit 前必须先启动 FastAPI 并确认 `http://127.0.0.1:8000/ready` 中 `rag_ready=true`。
 
 Windows PowerShell：
 
 ```powershell
-$env:HF_HUB_OFFLINE='1'
-$env:TRANSFORMERS_OFFLINE='1'
 $env:PYTHONIOENCODING='utf-8'
+$env:RAG_API_URL='http://127.0.0.1:8000'
 python -m streamlit run code\streamlit_app.py --server.port 8501 --server.address 127.0.0.1
 ```
 
 macOS / Linux：
 
 ```bash
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m streamlit run code/streamlit_app.py
+RAG_API_URL=http://127.0.0.1:8000 python -m streamlit run code/streamlit_app.py
 ```
 
 打开浏览器访问：
@@ -355,11 +354,13 @@ http://127.0.0.1:8501
 UI 支持：
 
 - 输入中文问题。
-- 显示识别到的 query type 和 topic。
-- 显示检索 query。
-- 展示 top-k chunks、section path 和 source path。
-- 可选择是否调用 LLM 生成最终回答。
-- 在未设置 API key 时，也可以只看检索结果。
+- 选择“优先使用缓存”或“强制重新生成”；后者发送 `cache_mode=fresh`。
+- 开启请求级 debug 日志。
+- 实时展示 SSE token、缓存命中状态、终态、检索 query 和多个来源。
+- 在返回有效 `query_id` 后提交“有帮助/没帮助”和可选评论。
+- 将已完成结果保存在 Streamlit 会话中，控件 rerun 不会重复执行 RAG。
+
+`MOONSHOT_API_KEY`、Redis、MySQL、embedding 和索引配置只需要提供给 FastAPI。Streamlit 只需要能访问 `RAG_API_URL`；FastAPI 不可用时不会回退到本地 RAG。
 
 ## FastAPI 后端与 JSONL 日志
 
