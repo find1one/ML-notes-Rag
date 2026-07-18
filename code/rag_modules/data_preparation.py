@@ -34,8 +34,15 @@ class DataPreparationModule:
         "appendix": ["appendix", "附录", "programming", "python", "r"],
     }
 
-    def __init__(self, data_path: str):
+    def __init__(self, data_path: str, chunk_size: int = 1200, chunk_overlap: int = 150):
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be greater than zero.")
+        if chunk_overlap < 0 or chunk_overlap >= chunk_size:
+            raise ValueError("chunk_overlap must be non-negative and smaller than chunk_size.")
+
         self.data_path = data_path
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
         self.documents: List[Document] = []
         self.chunks: List[Document] = []
         self.parent_child_map: Dict[str, str] = {}
@@ -132,8 +139,8 @@ class DataPreparationModule:
             strip_headers=False,
         )
         length_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1200,
-            chunk_overlap=150,
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
             separators=["\n\n", "\n", ". ", " ", ""],
         )
 

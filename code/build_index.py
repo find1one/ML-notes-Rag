@@ -1,6 +1,7 @@
 """Offline index build, evaluation, and publish command."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import sys
@@ -19,6 +20,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-top1", type=float, default=0.60, help="Minimum top-1 source accuracy for publish.")
     parser.add_argument("--min-topk", type=float, default=0.85, help="Minimum top-k source accuracy for publish.")
     parser.add_argument("--online", action="store_true", help="Allow Hugging Face network access.")
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=None,
+        help="Recursive character chunk size; defaults to RAG_CHUNK_SIZE or 1200.",
+    )
+    parser.add_argument(
+        "--report-json",
+        type=Path,
+        default=None,
+        help="Optionally write aggregate metrics and per-case retrieval outcomes as JSON.",
+    )
     return parser.parse_args()
 
 
@@ -51,21 +64,61 @@ def main() -> int:
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
     config = DEFAULT_CONFIG
-    data_module = DataPreparationModule(config.data_path)
+    chunk_size = args.chunk_size if args.chunk_size is not None else config.chunk_size
+    data_module = DataPreparationModule(
+        config.data_path,
+        chunk_size=chunk_size,
+        chunk_overlap=config.chunk_overlap,
+    )
     data_module.load_documents()
     chunks = data_module.chunk_documents()
 
     index_module = IndexConstructionModule(config.embedding_model, config.index_save_path)
-    vectorstore = index_module.build_vector_index(chunks, skipped_files=data_module.skipped_files)
+    vectorstore = index_module.build_vector_index(
+        chunks,
+        skipped_files=data_module.skipped_files,
+        write_manifest=False,
+    )
     retriever = RetrievalOptimizationModule(vectorstore, chunks)
     results = evaluate_cases(retriever, EVAL_CASES, args.top_k)
     evaluation = _evaluation_summary(results, args.top_k, args.min_top1, args.min_topk)
 
     print("Offline index evaluation")
+    chunk_lengths = [len(chunk.page_content) for chunk in chunks]
+    print(f"  chunk size setting: {chunk_size} characters")
+    print(f"  chunk overlap: {config.chunk_overlap} characters")
+    print(f"  chunks: {len(chunks)}")
+    print(f"  average chunk length: {sum(chunk_lengths) / len(chunk_lengths):.1f} characters")
+    print(f"  maximum chunk length: {max(chunk_lengths)} characters")
     print(f"  status: {evaluation['status']}")
     print(f"  source-evaluable cases: {evaluation['source_evaluable_count']}/{evaluation['case_count']}")
     print(f"  top1 source accuracy: {evaluation['top1_source_accuracy']:.1%}")
     print(f"  top{args.top_k} source accuracy: {evaluation[f'top{args.top_k}_source_accuracy']:.1%}")
+    print(f"  top{args.top_k} topic accuracy: {evaluation[f'top{args.top_k}_topic_accuracy']:.1%}")
+
+    if args.report_json:
+        report = {
+            "chunk_size": chunk_size,
+            "chunk_overlap": config.chunk_overlap,
+            "chunk_count": len(chunks),
+            "average_chunk_length": sum(chunk_lengths) / len(chunk_lengths),
+            "maximum_chunk_length": max(chunk_lengths),
+            "evaluation": evaluation,
+            "cases": [
+                {
+                    "name": result["case"].name,
+                    "evaluable": result["evaluable"],
+                    "top1_hit": result["top1_hit"],
+                    "topk_hit": result["topk_hit"],
+                    "topic_hit": result["topic_hit"],
+                    "paths": result["paths"],
+                }
+                for result in results
+            ],
+        }
+        args.report_json.parent.mkdir(parents=True, exist_ok=True)
+        args.report_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(f"  report: {args.report_json}")
 
     if args.publish:
         if evaluation["status"] != "passed":

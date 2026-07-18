@@ -72,3 +72,20 @@ If these conditions are not met, retain the published 1200-character index.
 ## Testing
 
 Add focused tests for configuration propagation and chunk-size override behavior. Run the existing unit test suite, then run both offline retrieval evaluations from the same source revision. Capture the A/B metrics and changed cases in the implementation report before deciding whether to publish.
+
+## Experiment Result — 2026-07-18
+
+Both variants were built in memory from the same source revision. Neither evaluation wrote to or published the verified index.
+
+| Measurement | 1200 baseline | 1000 candidate |
+| --- | ---: | ---: |
+| Chunk count | 255 | 266 |
+| Average chunk length | 555.1 | 534.4 |
+| Maximum chunk length | 1375 | 1375 |
+| Top-1 source accuracy | 31/35 (88.6%) | 31/35 (88.6%) |
+| Top-3 source accuracy | 32/35 (91.4%) | 32/35 (91.4%) |
+| Top-3 topic accuracy | 33/35 (94.3%) | 33/35 (94.3%) |
+
+The candidate changed the ranked source paths for five cases but did not improve a Top-1, Top-3, or topic outcome. For the source-skipped `logistic_regression` data-quality case, topic retrieval regressed from a hit to a miss. The other four changed rankings preserved their evaluated outcomes.
+
+The 1000-character candidate therefore does not satisfy the adoption rule: it adds 11 chunks without an aggregate retrieval gain and introduces one non-evaluable-case topic regression. Keep 1200 as the default and do not publish the 1000-character index.

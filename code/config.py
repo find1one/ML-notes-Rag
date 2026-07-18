@@ -37,6 +37,8 @@ class RAGConfig:
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "kimi-k2.6"))
     top_k: int = field(default_factory=lambda: _env_int("RAG_TOP_K", 4))
     candidate_k: int = field(default_factory=lambda: _env_int("RAG_CANDIDATE_K", 80))
+    chunk_size: int = field(default_factory=lambda: _env_int("RAG_CHUNK_SIZE", 1200))
+    chunk_overlap: int = field(default_factory=lambda: _env_int("RAG_CHUNK_OVERLAP", 150))
     # Kimi K2.6 currently only accepts temperature=0.6 via Moonshot's API.
     temperature: float = field(default_factory=lambda: _env_float("LLM_TEMPERATURE", 0.6))
     max_tokens: int = field(default_factory=lambda: _env_int("LLM_MAX_TOKENS", 800))

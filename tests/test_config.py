@@ -7,7 +7,9 @@ def test_config_loads_repository_env_file(monkeypatch, tmp_path):
     code_dir = project_root / "code"
     code_dir.mkdir(parents=True)
     (project_root / ".env").write_text(
-        "DATABASE_URL=mysql+pymysql://env_user:env_password@db:3306/env_db\n",
+        "DATABASE_URL=mysql+pymysql://env_user:env_password@db:3306/env_db\n"
+        "RAG_CHUNK_SIZE=1000\n"
+        "RAG_CHUNK_OVERLAP=125\n",
         encoding="utf-8",
     )
 
@@ -21,3 +23,5 @@ def test_config_loads_repository_env_file(monkeypatch, tmp_path):
     spec.loader.exec_module(module)
 
     assert module.DEFAULT_CONFIG.database_url == "mysql+pymysql://env_user:env_password@db:3306/env_db"
+    assert module.DEFAULT_CONFIG.chunk_size == 1000
+    assert module.DEFAULT_CONFIG.chunk_overlap == 125

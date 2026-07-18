@@ -44,7 +44,13 @@ class IndexConstructionModule:
             encode_kwargs={"normalize_embeddings": True},
         )
 
-    def build_vector_index(self, chunks: List[Document], skipped_files: Optional[List[dict]] = None, evaluation: Optional[dict] = None) -> FAISS:
+    def build_vector_index(
+        self,
+        chunks: List[Document],
+        skipped_files: Optional[List[dict]] = None,
+        evaluation: Optional[dict] = None,
+        write_manifest: bool = True,
+    ) -> FAISS:
         if not chunks:
             raise ValueError("Document chunks cannot be empty.")
 
@@ -53,7 +59,8 @@ class IndexConstructionModule:
             documents=chunks,
             embedding=self.embeddings,
         )
-        self._write_manifest(chunks, skipped_files=skipped_files, evaluation=evaluation)
+        if write_manifest:
+            self._write_manifest(chunks, skipped_files=skipped_files, evaluation=evaluation)
         return self.vectorstore
 
     def add_documents(self, new_chunks: List[Document]) -> None:

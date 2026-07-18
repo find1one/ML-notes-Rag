@@ -205,7 +205,11 @@ def main() -> int:
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
     config = DEFAULT_CONFIG
-    data_module = DataPreparationModule(config.data_path)
+    data_module = DataPreparationModule(
+        config.data_path,
+        chunk_size=config.chunk_size,
+        chunk_overlap=config.chunk_overlap,
+    )
     data_module.load_documents()
     chunks = data_module.chunk_documents()
 
@@ -249,7 +253,6 @@ def evaluate_cases(
         top1_hit = evaluable and case.expected_path_contains in top1_path
         topk_hit = evaluable and any(case.expected_path_contains in path for path in paths)
         topic_hit = case.expected_topic in topics
-
         results.append(
             {
                 "case": case,

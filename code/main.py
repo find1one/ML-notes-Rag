@@ -50,7 +50,11 @@ class MLNotesRAGSystem:
     def initialize_system(self) -> None:
         print("Initializing ML notes RAG system...")
 
-        self.data_module = DataPreparationModule(self.config.data_path)
+        self.data_module = DataPreparationModule(
+            self.config.data_path,
+            chunk_size=self.config.chunk_size,
+            chunk_overlap=self.config.chunk_overlap,
+        )
         self.index_module = IndexConstructionModule(
             model_name=self.config.embedding_model,
             index_save_path=self.config.index_save_path,
