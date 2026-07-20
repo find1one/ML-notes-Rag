@@ -11,7 +11,7 @@
 - 对列表类问题使用 topic 元数据直接列出文档，避免中文 query 在英文语料上召回不全。
 - 提供 Streamlit Web UI，作为 FastAPI SSE 客户端展示回答与来源，并支持缓存策略、debug 和反馈。
 - 提供 FastAPI SSE 主入口 `/v1/chat/stream`、请求级 debug 模式、Redis exact cache、MySQL best-effort 查询记录，以及 JSONL 业务日志。
-- 提供 50 条不调用 LLM 的离线检索评估集；它只衡量本地检索质量，不代表 FastAPI/Moonshot 端到端延迟。当前 35 条可索引 source case 的 Top-1 source accuracy 为 88.6%，Top-3 source accuracy 为 91.4%，Top-3 topic accuracy 为 94.3%。
+- 提供 120 条不调用 LLM、全部 source 可评估的离线检索 case，另保留 15 条数据质量诊断。当前已发布的单层索引在 120-case 基准上的 Top-1 source accuracy 为 81.7%，Top-3 source accuracy 为 88.3%，Top-3 topic accuracy 为 94.2%；Parent–Child 消融结果见 [检索实验记录](docs/retrieval_experiment_log.md)。
 
 ## 项目目标
 
@@ -207,7 +207,9 @@ linear regression variable selection feature selection p-value backward eliminat
 │   ├── cache.py
 │   ├── config.py
 │   ├── database.py
+│   ├── evaluate_parent_child.py
 │   ├── evaluate_retrieval.py
+│   ├── retrieval_eval_cases.py
 │   ├── main.py
 │   ├── rag_logger.py
 │   ├── rag_service.py
@@ -222,8 +224,9 @@ linear regression variable selection feature selection p-value backward eliminat
 │   └── ML-Notes-in-Markdown-master
 ├── docs
 │   ├── backend_api_logging.md
+│   ├── retrieval_experiment_log.md
 │   └── superpowers/specs
-│       └── 2026-07-16-streamlit-fastapi-integration-design.md
+│       └── *.md
 ├── tests
 ├── AGENTS.md -> CLAUDE.md
 ├── CLAUDE.md
@@ -601,7 +604,7 @@ python code/evaluate_retrieval.py --top-k 3
 - Top-k topic accuracy
 - 每个 case 的 top-k 检索结果、topic、section 和 source path
 
-评估集现包含 50 条无 LLM 的固定检索 query。其中 15 条预期来源为空或不存在，会显示为 `SKIP` 并从 source-recall 分母中剔除；它们仍保留在报告中，用于暴露数据质量问题。当前基线基于其余 35 条可索引 source case：
+主评测集现包含 120 条无 LLM 的固定检索 query，全部具有可索引的精确预期 source。原有 15 条空、缺失或过短 source case 单独保留为数据质量诊断，不进入主指标分母。当前已发布的单层索引在新基准上的只读复评结果如下；复评没有重建或发布索引：
 
 ```text
 python code/evaluate_retrieval.py --top-k 3
@@ -611,20 +614,21 @@ python code/evaluate_retrieval.py --top-k 3
 
 | 指标 | 含义 | 当前结果 |
 | --- | --- | --- |
-| Top-1 source accuracy | 第 1 个 chunk 的 `relative_path` 命中预期源文件 | 31/35 = 88.6% |
-| Top-3 source accuracy | 前 3 个 chunk 中任意一个命中预期源文件 | 32/35 = 91.4% |
-| Top-3 topic accuracy | 前 3 个 chunk 中任意一个命中预期主题 | 33/35 = 94.3% |
+| Top-1 source accuracy | 第 1 个 chunk 的 `relative_path` 命中预期源文件 | 98/120 = 81.7% |
+| Top-3 source accuracy | 前 3 个 chunk 中任意一个命中预期源文件 | 106/120 = 88.3% |
+| Top-3 topic accuracy | 前 3 个 chunk 中任意一个命中预期主题 | 113/120 = 94.2% |
 
 验收目标为 Top-1 source accuracy 不低于 60%、Top-3 不低于 85%。实际 UI 和 `/v1/chat/stream` 的 `retrieval_done` 事件会展示多个 source，方便用户判断召回是否可靠。
 
+当前已完成 chunk size、PC0、contextual child（PC1）、source-aware max（PC2）和 Top-2 加权聚合（H1）实验。PC2 相对 PC0 将 Top-3 source accuracy 从 88.3% 提升到 92.5%，Source MRR@3 从 0.8333 提升到 0.8500，且没有 source 名次回退；H1 虽提高 Top-3 覆盖，但 Source MRR@3 下降并有两条 source 漏出 Top-3，因此不采用。完整指标、逐 case 变化、实验意义和阶段收尾边界统一记录在 [检索实验记录](docs/retrieval_experiment_log.md)。这些实验只构建内存索引，没有修改线上默认检索或发布生产索引。
+
 ## 失败案例分析
 
-本轮评估中，主要数据问题是若干算法文件为空，无法生成 chunk；这些 case 会被标记为 `SKIP`。可索引 source case 中仍有少量概览类问题未命中预期 README：
+15 条空、缺失或过短 source 现在作为独立数据质量诊断，不再混入主评测。120 条主评测中仍有概览类问题未命中预期 README：
 
 | Case | Query | 预期 source | 实际 Top-3 概况 | 可能原因 |
 | --- | --- | --- | --- | --- |
-| `clustering_overview` | `clustering machine learning` | `03-Clustering/README.md` | 根 README 与其他主题概览 | 根目录概览文本对通用 query 的词法信号更强 |
-| `prerequisites_overview` | `machine learning prerequisites` | `00-Prerequisites/README.md` | 根 README 与 Deep Learning 概览 | 主题 README 信息密度低于根目录导航 |
+| `prerequisites_overview` | `machine learning prerequisites linear algebra statistics types of data` | `00-Prerequisites/README.md` | `TypesOfData.md` 与 `LinearAlgebra.md` | 具体先修文档的内容和词法信号强于主题 README |
 
 这些失败不代表系统完全无法回答对应问题，而是说明“精确源文件命中”仍不稳定。当前缓解方式包括：
 
@@ -647,7 +651,7 @@ python code/evaluate_retrieval.py --top-k 3
 
 这个项目不是完整的机器学习教材问答系统，当前限制包括：
 
-- 评估集有 50 条 query，但其中 15 条预期来源为空或不存在；修复这些数据文件后才能把它们纳入 source-recall 指标。
+- 当前 120 条主评测 case 是语料平衡的离线基准，不是生产查询的随机样本；另有 15 条空、缺失或过短 source 诊断，反映知识库覆盖缺口而非检索器准确率。
 - 生成质量依赖 Moonshot/Kimi API；未设置 API key 时无法通过 FastAPI 或 Streamlit 问答，但仍可运行离线检索评估。
 - Markdown 中的图片公式目前只保留链接文本，尚未做 OCR 或公式解析。
 - 当前只提供 Redis exact cache；不引入 semantic cache。

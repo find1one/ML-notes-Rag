@@ -81,10 +81,6 @@ class RAGService:
     def ready(self) -> bool:
         return bool(self.rag_system.retrieval_module and self.rag_system.generation_module)
 
-    @property
-    def retrieval_ready(self) -> bool:
-        return bool(self.rag_system.data_module and self.rag_system.retrieval_module)
-
     def execute(self, question: str) -> RAGExecution:
         prepared = self.prepare(question)
         if prepared.gate_decision != "passed":
@@ -108,8 +104,8 @@ class RAGService:
         question = question.strip()
         if not question:
             raise ValueError("Question cannot be empty")
-        if not self.retrieval_ready:
-            raise RAGUnavailableError("RAG retrieval service is not ready")
+        if not self.ready:
+            raise RAGUnavailableError("RAG generation service is not ready")
 
         metrics: dict[str, int] = {}
         route_start = time.perf_counter()
@@ -117,7 +113,9 @@ class RAGService:
         metrics["route_ms"] = self._elapsed_ms(route_start)
 
         expand_start = time.perf_counter()
+        # 尝试从question中匹配到topic，如果匹配到，则将其作为检索过滤条件之一，没匹配到返回None
         topic = DataPreparationModule.match_topic_from_query(question)
+        # 得到了扩充后的query或者原问题
         retrieval_query = self._expand_query(question)
         metrics["expand_ms"] = self._elapsed_ms(expand_start)
 
@@ -125,12 +123,12 @@ class RAGService:
         if route_type == "list" and topic:
             docs = self.rag_system.data_module.filter_documents_by_topic(topic)
             metrics["total_retrieval_ms"] = self._elapsed_ms(retrieval_start)
-        elif topic:
+        elif topic: # question中匹配到topic的情况
             docs = self.rag_system.retrieval_module.metadata_filtered_search(
                 retrieval_query, {"topic": topic}, top_k=self.rag_system.config.top_k
             )
             metrics.update(self.rag_system.retrieval_module.last_metrics)
-        else:
+        else: # question中没有匹配到topic的情况
             docs = self.rag_system.retrieval_module.hybrid_search(
                 retrieval_query,
                 top_k=self.rag_system.config.top_k,
@@ -209,7 +207,7 @@ class RAGService:
             terms.append(topic)
 
         # 去重并将问题和英文关键词组合成最终的检索查询
-        return f"{question} {' '.join(dict.fromkeys(terms))}".strip()
+        return f"{question} {' '.join(dict.fromkeys(terms))}".strip() 
 
     def _gate_evidence(
         self,

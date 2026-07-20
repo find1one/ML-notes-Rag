@@ -21,4 +21,5 @@ RAG_API_URL=http://127.0.0.1:8000 python -m streamlit run code/streamlit_app.py
 
 - `README.md`：安装、运行、接口示例与评估结果。
 - `docs/backend_api_logging.md`：后端接入、终态、降级与日志字段。
+- `docs/retrieval_experiment_log.md`：检索 benchmark、Parent–Child 消融、逐 case 结果与阶段边界。
 - `docs/superpowers/specs/2026-07-16-streamlit-fastapi-integration-design.md`：Streamlit–FastAPI 边界与状态流。

@@ -1,10 +1,16 @@
+import pytest
+
 from langchain_core.documents import Document
 
 from evaluate_parent_child import (
     ExperimentChildRetriever,
     ParentChildRetriever,
+    SourceAwareMaxRetriever,
+    SourceAwareTop2Retriever,
     _evaluation_summary,
+    _length_bias_diagnostic,
     _metrics_gate,
+    _source_size_stats,
     build_contextual_children,
     build_parent_child_corpus,
     compare_case_reports,
@@ -126,6 +132,135 @@ def test_retriever_keeps_candidate_k_fixed_at_80():
     assert child_retriever.requests == [(1, 80)]
 
 
+def test_source_aware_max_returns_best_parent_once_per_source():
+    parents = {
+        "a1": _parent("a1", "weaker parent from source a"),
+        "a2": _parent("a2", "best parent from source a"),
+        "b1": _parent("b1", "parent from source b"),
+    }
+    parents["a1"].metadata["relative_path"] = "source-a.md"
+    parents["a2"].metadata["relative_path"] = "source-a.md"
+    parents["b1"].metadata["relative_path"] = "source-b.md"
+    children = [
+        Document(page_content="b", metadata={"parent_chunk_id": "b1", "rrf_score": 0.8}),
+        Document(page_content="a1", metadata={"parent_chunk_id": "a1", "rrf_score": 0.7}),
+        Document(page_content="a2", metadata={"parent_chunk_id": "a2", "rrf_score": 0.9}),
+        Document(page_content="a1 weaker", metadata={"parent_chunk_id": "a1", "rrf_score": 0.4}),
+    ]
+    child_retriever = FakeChildRetriever(children)
+    retriever = SourceAwareMaxRetriever(child_retriever, parents, len(children))
+
+    results = retriever.hybrid_search("query", top_k=3)
+
+    assert [result.metadata["chunk_id"] for result in results] == ["a2", "b1"]
+    assert [result.metadata["relative_path"] for result in results] == [
+        "source-a.md",
+        "source-b.md",
+    ]
+    assert retriever.last_metrics["unique_parents_found"] == 3
+    assert retriever.last_metrics["unique_sources_found"] == 2
+
+
+def test_source_aware_top2_uses_weighted_child_and_parent_support():
+    parents = {
+        "a1": _parent("a1", "best supported parent from source a"),
+        "a2": _parent("a2", "second parent from source a"),
+        "b1": _parent("b1", "single parent from source b"),
+    }
+    parents["a1"].metadata["relative_path"] = "source-a.md"
+    parents["a2"].metadata["relative_path"] = "source-a.md"
+    parents["b1"].metadata["relative_path"] = "source-b.md"
+    children = [
+        Document(
+            page_content="b1",
+            metadata={"chunk_id": "b1-c1", "parent_chunk_id": "b1", "rrf_score": 0.9},
+        ),
+        Document(
+            page_content="a1 first",
+            metadata={"chunk_id": "a1-c1", "parent_chunk_id": "a1", "rrf_score": 0.6},
+        ),
+        Document(
+            page_content="a1 second",
+            metadata={"chunk_id": "a1-c2", "parent_chunk_id": "a1", "rrf_score": 0.5},
+        ),
+        Document(
+            page_content="a2 first",
+            metadata={"chunk_id": "a2-c1", "parent_chunk_id": "a2", "rrf_score": 0.7},
+        ),
+        Document(
+            page_content="a2 second",
+            metadata={"chunk_id": "a2-c2", "parent_chunk_id": "a2", "rrf_score": 0.1},
+        ),
+    ]
+    retriever = SourceAwareTop2Retriever(
+        FakeChildRetriever(children),
+        parents,
+        len(children),
+    )
+
+    results = retriever.hybrid_search("query", top_k=2)
+
+    assert [result.metadata["chunk_id"] for result in results] == ["a1", "b1"]
+    evidence = retriever.last_aggregation["ranked_sources"]
+    assert evidence[0]["source"] == "source-a.md"
+    assert evidence[0]["source_score"] == 1.075
+    assert evidence[0]["parents"][0]["parent_score"] == 0.85
+    assert evidence[0]["parents"][1]["parent_score"] == 0.75
+    assert evidence[0]["parents"][0]["children"][1]["weighted_contribution"] == 0.25
+    assert evidence[0]["parents"][1]["weighted_contribution"] == pytest.approx(0.225)
+    assert retriever.last_metrics["parents_with_second_child"] == 2
+    assert retriever.last_metrics["sources_with_second_parent"] == 1
+
+
+def test_source_aware_top2_treats_missing_or_duplicate_second_evidence_as_zero():
+    parents = {"a": _parent("a", "parent a")}
+    child = Document(
+        page_content="only child",
+        metadata={"chunk_id": "a-c1", "parent_chunk_id": "a", "rrf_score": 0.8},
+    )
+    retriever = SourceAwareTop2Retriever(
+        FakeChildRetriever([child, child]),
+        parents,
+        child_count=2,
+    )
+
+    results = retriever.hybrid_search("query", top_k=1)
+
+    assert [result.metadata["chunk_id"] for result in results] == ["a"]
+    source = retriever.last_aggregation["ranked_sources"][0]
+    assert source["source_score"] == 0.8
+    assert len(source["parents"]) == 1
+    assert len(source["parents"][0]["children"]) == 1
+    assert retriever.last_metrics["parents_with_second_child"] == 0
+    assert retriever.last_metrics["sources_with_second_parent"] == 0
+
+
+def test_source_aware_top2_has_deterministic_source_tie_break():
+    parents = {
+        "z": _parent("z", "source z"),
+        "a": _parent("a", "source a"),
+    }
+    children = [
+        Document(
+            page_content="z",
+            metadata={"chunk_id": "z-c", "parent_chunk_id": "z", "rrf_score": 0.5},
+        ),
+        Document(
+            page_content="a",
+            metadata={"chunk_id": "a-c", "parent_chunk_id": "a", "rrf_score": 0.5},
+        ),
+    ]
+    retriever = SourceAwareTop2Retriever(
+        FakeChildRetriever(children),
+        parents,
+        len(children),
+    )
+
+    results = retriever.hybrid_search("query", top_k=2)
+
+    assert [result.metadata["relative_path"] for result in results] == ["z.md", "a.md"]
+
+
 def test_experiment_child_retriever_uses_80_candidates_per_route(monkeypatch):
     requested = {}
 
@@ -183,6 +318,7 @@ def test_case_comparison_reports_rank_and_path_changes():
         {
             "name": "case",
             "evaluable": True,
+            "change_type": "regressed",
             "outcome_changed": True,
             "ranking_changed": True,
             "paths_changed": True,
@@ -206,6 +342,45 @@ def test_metrics_gate_rejects_improvement_from_only_one_case():
 
     assert not _metrics_gate(pc0, pc1, top_k=3, source_rank_change_count=1)
     assert _metrics_gate(pc0, pc1, top_k=3, source_rank_change_count=2)
+
+
+def test_source_size_stats_and_length_bias_diagnostic_are_deterministic():
+    parents = {
+        "long": _parent("long", "long source"),
+        "medium": _parent("medium", "medium source"),
+        "short": _parent("short", "short source"),
+        "tiny": _parent("tiny", "tiny source"),
+    }
+    children = [
+        Document(page_content=str(index), metadata={"parent_chunk_id": "long"})
+        for index in range(4)
+    ] + [
+        Document(page_content="m", metadata={"parent_chunk_id": "medium"}),
+        Document(page_content="s", metadata={"parent_chunk_id": "short"}),
+        Document(page_content="t", metadata={"parent_chunk_id": "tiny"}),
+    ]
+    sizes = _source_size_stats(parents, children)
+    changes = [
+        {
+            "name": "long-improvement-1",
+            "evaluable": True,
+            "pc2": {"source_rank": None},
+            "h1": {"source_rank": 3, "expected_path": "long.md"},
+        },
+        {
+            "name": "long-improvement-2",
+            "evaluable": True,
+            "pc2": {"source_rank": 2},
+            "h1": {"source_rank": 1, "expected_path": "long.md"},
+        },
+    ]
+
+    diagnostic = _length_bias_diagnostic(changes, "pc2", "h1", sizes)
+
+    assert sizes["long.md"] == {"parent_count": 1, "child_count": 4}
+    assert diagnostic["highest_child_count_quartile_sources"] == ["long.md"]
+    assert diagnostic["high_quartile_improvement_count"] == 2
+    assert diagnostic["manual_review"] is True
 
 
 def test_experiment_summary_includes_source_and_topic_mrr_at_3():

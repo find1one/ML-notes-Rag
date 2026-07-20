@@ -1,5 +1,7 @@
 # Retrieval Evaluation Case Expansion Design
 
+> Status (2026-07-19): completed. The frozen primary benchmark now contains 120 source-evaluable cases; 15 invalid historical rows remain separate diagnostics. Results are recorded in `docs/retrieval_experiment_log.md`.
+
 ## Goal
 
 Expand the retrieval benchmark from 35 source-evaluable cases to 120 source-evaluable cases before continuing Parent–Child ablations. The expanded benchmark must measure corpus-grounded retrieval quality without being tailored to PC0, PC1, or any later candidate's observed results.
