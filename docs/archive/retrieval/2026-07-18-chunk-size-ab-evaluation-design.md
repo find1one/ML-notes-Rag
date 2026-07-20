@@ -1,6 +1,6 @@
 # Chunk Size 1200/1000 A/B Evaluation Design
 
-> 状态（2026-07-18）：已执行。两组聚合 accuracy 持平，保留 1200，不发布候选索引。完整结果见 `docs/retrieval_experiment_log.md`；本文保留实验前设计口径。
+> 状态（2026-07-18）：已执行。两组聚合 accuracy 持平，保留 1200，不发布候选索引。完整结果见 `docs/experiments/retrieval/results.md`；本文保留实验前设计口径。
 
 ## Goal
 

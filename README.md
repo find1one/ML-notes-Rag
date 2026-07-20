@@ -11,7 +11,7 @@
 - 对列表类问题使用 topic 元数据直接列出文档，避免中文 query 在英文语料上召回不全。
 - 提供 Streamlit Web UI，作为 FastAPI SSE 客户端展示回答与来源，并支持缓存策略、debug 和反馈。
 - 提供 FastAPI SSE 主入口 `/v1/chat/stream`、请求级 debug 模式、Redis exact cache、MySQL best-effort 查询记录，以及 JSONL 业务日志。
-- 提供 120 条不调用 LLM、全部 source 可评估的离线检索 case，另保留 15 条数据质量诊断。当前已发布的单层索引在 120-case 基准上的 Top-1 source accuracy 为 81.7%，Top-3 source accuracy 为 88.3%，Top-3 topic accuracy 为 94.2%；Parent–Child 消融结果见 [检索实验记录](docs/retrieval_experiment_log.md)。
+- 提供 120 条不调用 LLM、全部 source 可评估的离线检索 case，另保留 15 条数据质量诊断。当前已发布的单层索引在 120-case 基准上的 Top-1 source accuracy 为 81.7%，Top-3 source accuracy 为 88.3%，Top-3 topic accuracy 为 94.2%；Parent–Child 消融结果见 [检索实验记录](docs/experiments/retrieval/results.md)。
 
 ## 项目目标
 
@@ -527,7 +527,7 @@ generation_ms
 更详细的后端接口、错误处理和日志设计说明见：
 
 ```text
-docs/backend_api_logging.md
+docs/architecture/api-observability.md
 ```
 
 ## 示例
@@ -620,7 +620,7 @@ python code/evaluate_retrieval.py --top-k 3
 
 验收目标为 Top-1 source accuracy 不低于 60%、Top-3 不低于 85%。实际 UI 和 `/v1/chat/stream` 的 `retrieval_done` 事件会展示多个 source，方便用户判断召回是否可靠。
 
-当前已完成 chunk size、PC0、contextual child（PC1）、source-aware max（PC2）和 Top-2 加权聚合（H1）实验。PC2 相对 PC0 将 Top-3 source accuracy 从 88.3% 提升到 92.5%，Source MRR@3 从 0.8333 提升到 0.8500，且没有 source 名次回退；H1 虽提高 Top-3 覆盖，但 Source MRR@3 下降并有两条 source 漏出 Top-3，因此不采用。完整指标、逐 case 变化、实验意义和阶段收尾边界统一记录在 [检索实验记录](docs/retrieval_experiment_log.md)。这些实验只构建内存索引，没有修改线上默认检索或发布生产索引。
+当前已完成 chunk size、PC0、contextual child（PC1）、source-aware max（PC2）和 Top-2 加权聚合（H1）实验。PC2 相对 PC0 将 Top-3 source accuracy 从 88.3% 提升到 92.5%，Source MRR@3 从 0.8333 提升到 0.8500，且没有 source 名次回退；H1 虽提高 Top-3 覆盖，但 Source MRR@3 下降并有两条 source 漏出 Top-3，因此不采用。完整指标、逐 case 变化、实验意义和阶段收尾边界统一记录在 [检索实验记录](docs/experiments/retrieval/results.md)。这些实验只构建内存索引，没有修改线上默认检索或发布生产索引。
 
 ## 失败案例分析
 

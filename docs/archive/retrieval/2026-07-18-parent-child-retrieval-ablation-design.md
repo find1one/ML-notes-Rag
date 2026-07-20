@@ -1,6 +1,6 @@
 # Parent–Child 检索消融实验设计
 
-> 状态（2026-07-19）：PC1 未通过，PC2 通过离线门槛，H1 Top-2 加权未通过；本阶段已在 retrieval 聚合排序层收尾，未发布生产索引。完整结果与阶段边界见 `docs/retrieval_experiment_log.md`。本文中的 50/35-case 数字是实验设计时的历史口径。
+> 状态（2026-07-19）：PC1 未通过，PC2 通过离线门槛，H1 Top-2 加权未通过；本阶段已在 retrieval 聚合排序层收尾，未发布生产索引。完整结果与阶段边界见 `docs/experiments/retrieval/results.md`。本文中的 50/35-case 数字是实验设计时的历史口径。
 
 ## 1. 目标
 

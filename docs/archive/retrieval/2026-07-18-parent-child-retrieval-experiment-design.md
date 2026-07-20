@@ -1,6 +1,6 @@
 # Parent–Child Retrieval Experiment Design
 
-> 状态（2026-07-18）：已执行历史 35-case PC0 实验，候选未通过生产替换条件。后续 120-case PC1、PC2、H1 结果见 `docs/retrieval_experiment_log.md`；本文的 35-case 数字作为历史实验记录保留。
+> 状态（2026-07-18）：已执行历史 35-case PC0 实验，候选未通过生产替换条件。后续 120-case PC1、PC2、H1 结果见 `docs/experiments/retrieval/results.md`；本文的 35-case 数字作为历史实验记录保留。
 
 ## Goal
 

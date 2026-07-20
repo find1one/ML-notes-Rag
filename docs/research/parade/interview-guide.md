@@ -2,7 +2,7 @@
 
 > 目标岗位：RAG/LLM 应用算法实习
 >
-> 事实口径：[公开案例主稿](parade_parent_child_case_study.md)与[检索实验记录](retrieval_experiment_log.md)
+> 事实口径：[公开案例主稿](case-study.md)与[检索实验记录](../../experiments/retrieval/results.md)
 >
 > 使用方式：先熟悉 30 秒和 2 分钟版本，再按岗位选择追问深入程度。不要背诵自己尚不能解释的句子。
 

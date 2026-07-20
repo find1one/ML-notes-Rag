@@ -4,7 +4,7 @@
 >
 > 阅读版本：[arXiv:2008.09093v2](https://arxiv.org/abs/2008.09093)，[PDF](https://arxiv.org/pdf/2008.09093)
 >
-> 本文用途：为 `parade_parent_child_case_study.md` 提供可追溯的论文依据。它是引导式精读底稿，不代表项目复现了 PARADE。
+> 本文用途：为 `case-study.md` 提供可追溯的论文依据。它是引导式精读底稿，不代表项目复现了 PARADE。
 
 ## 1. 先用一句话理解论文
 
@@ -243,4 +243,4 @@ overlap / 近重复 / 长文档带来的重复命中 → 不应等价奖励
 - [PARADE arXiv 页面](https://arxiv.org/abs/2008.09093)
 - [PARADE PDF](https://arxiv.org/pdf/2008.09093)
 - [作者公开实现](https://github.com/canjiali/PARADE)
-- [项目检索实验记录](retrieval_experiment_log.md)
+- [项目检索实验记录](../../experiments/retrieval/results.md)

@@ -1,6 +1,6 @@
 # Parent–Child H1 Top-2 加权聚合实验设计
 
-> 状态（2026-07-19）：已执行。H1 的 Top-3 source/topic 覆盖提高，但 Source MRR@3 下降，且两条预期 source 漏出 Top-3，因此未通过预设门槛。完整结果见 `docs/retrieval_experiment_log.md`。
+> 状态（2026-07-19）：已执行。H1 的 Top-3 source/topic 覆盖提高，但 Source MRR@3 下降，且两条预期 source 漏出 Top-3，因此未通过预设门槛。完整结果见 `docs/experiments/retrieval/results.md`。
 
 ## 1. 目标
 
@@ -161,7 +161,7 @@ Top-1 Source Accuracy 和 Top-3 Topic Accuracy 继续记录为回归提示，但
 - `code/evaluate_parent_child.py`；
 - `tests/test_parent_child_experiment.py`。
 
-实验完成并确认结果后，才更新 `docs/retrieval_experiment_log.md`。不得修改：
+实验完成并确认结果后，才更新 `docs/experiments/retrieval/results.md`。不得修改：
 
 - `code/rag_modules/retrieval_optimization.py`；
 - API、RAGService、Streamlit 或配置；

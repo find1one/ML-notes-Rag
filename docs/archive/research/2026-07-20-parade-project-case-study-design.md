@@ -22,7 +22,7 @@
 
 ### 3.1 公开案例主稿
 
-文件：`docs/parade_parent_child_case_study.md`
+文件：`docs/research/parade/case-study.md`
 
 主稿采用项目问题优先的结构：
 
@@ -40,7 +40,7 @@
 
 ### 3.2 PARADE 精读笔记
 
-文件：`docs/parade_reading_notes.md`
+文件：`docs/research/parade/reading-notes.md`
 
 精读笔记作为研究底稿，不追求连续文章形式。对论文各部分固定记录：
 
@@ -56,7 +56,7 @@
 
 ### 3.3 面试指南
 
-文件：`docs/parade_interview_guide.md`
+文件：`docs/research/parade/interview-guide.md`
 
 面试指南包含：
 
@@ -71,7 +71,7 @@
 
 ## 4. 事实来源与映射边界
 
-项目事实和实验数字以 `docs/retrieval_experiment_log.md` 为主要来源，并与相关实验设计、评测代码和 README 交叉核对。
+项目事实和实验数字以 `docs/experiments/retrieval/results.md` 为主要来源，并与相关实验设计、评测代码和 README 交叉核对。
 
 论文结论以 PARADE 原文为主要来源。关键判断需要记录可追溯的章节、图表或实验位置，公开主稿使用规范引用。
 
@@ -94,7 +94,7 @@
 6. 由用户进行一次轻量复核，确认工作归属、个人可理解性和公开范围；
 7. 根据复核结果做最终修订。
 
-后续项目实验或默认检索行为发生变化时，先更新 `docs/retrieval_experiment_log.md`，再同步对照主稿和面试指南。论文精读笔记只在新发现影响解释或引用时更新。
+后续项目实验或默认检索行为发生变化时，先更新 `docs/experiments/retrieval/results.md`，再同步对照主稿和面试指南。论文精读笔记只在新发现影响解释或引用时更新。
 
 ## 6. 用户参与方式
 
@@ -122,7 +122,7 @@
 
 文档验收采用静态核查，不运行新的检索实验：
 
-1. 对项目数字逐项比对 `docs/retrieval_experiment_log.md`；
+1. 对项目数字逐项比对 `docs/experiments/retrieval/results.md`；
 2. 对论文结论逐项比对 PARADE 原文；
 3. 搜索不允许的过度表述，例如“实现 PARADE”“证明答案质量提升”；
 4. 检查三份材料中的 PC2/H1 数字和采用结论是否一致；

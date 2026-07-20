@@ -1,6 +1,6 @@
 # Retrieval Evaluation Case Expansion Design
 
-> Status (2026-07-19): completed. The frozen primary benchmark now contains 120 source-evaluable cases; 15 invalid historical rows remain separate diagnostics. Results are recorded in `docs/retrieval_experiment_log.md`.
+> Status (2026-07-19): completed. The frozen primary benchmark now contains 120 source-evaluable cases; 15 invalid historical rows remain separate diagnostics. Results are recorded in `docs/experiments/retrieval/results.md`.
 
 ## Goal
 
